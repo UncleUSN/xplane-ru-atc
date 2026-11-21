@@ -1,14 +1,15 @@
 """Разбор экрана CDU Zibo 737 (строковые datarefs laminar/B738/fmc1/LineNN_*).
 
-ПРОВЕРЕНО (B738_Datarefs.txt rel. 2.35 + форум Zibo): строки по 24 символа,
-  Line00_L / Line00_S — заголовок страницы; LineNN_X — мелкая подпись над строкой NN (NN=01..06);
-  LineNN_L — крупный шрифт, LineNN_S — мелкий, LineNN_I — инверсный; Line_entry — блокнот.
-ПО ФОРУМУ (не в официальном списке): цветовые слои LineNN_M (magenta), _G (green), _C (cyan), _GX, _LX, _SI.
-Слои накладываются посимвольно: в каждой позиции берём первый непустой символ.
+Проверено дампом с симулятора (ноябрь 2026): строки — обычный текст по 24 символа, не base64.
+  Line00_L / Line00_S — заголовок (крупный и мелкий слой накладываются: «ACT PERF INIT» + «1/2»);
+  LineNN_X — мелкая подпись над строкой NN; LineNN_L — крупный шрифт, LineNN_S — мелкий.
+  Слоёв M/G/C/I в этом Zibo не было. Одна строка бывает разрезана по колонкам между L и S
+  (значение ZFW в _S, прочерки в _L): в каждой позиции берётся первый непустой символ.
+  Обратная кавычка ` на CDU — знак градуса.
 
-Раскладка страниц — стандартная Boeing 737 (ПРЕДПОЛОЖЕНИЕ, что Zibo пишет подписи именно так:
-ORIGIN/DEST, RUNWAY/FLT NO., VIA/TO, SIDS/RUNWAYS/TRANS, STARS/APPROACHES, CRZ ALT, <SEL>/<ACT>).
-Парсер нечувствителен к точным позициям: делит строку на левую и правую половины.
+Страницы DEP/ARR — списки. Имя схемы берём только рядом с маркером <SEL> или <ACT>
+(выбранный пункт). Просто строка из списка вылетов — не активный SID.
+PERF INIT: CRZ ALT справа в строке «TRIP/CRZ ALT», значение вида FL410/FL330.
 """
 from __future__ import annotations
 
@@ -48,7 +49,7 @@ def overlay(parts: List[str]) -> str:
                 ch = p[i]
                 break
         out.append(ch)
-    return "".join(out).rstrip()
+    return "".join(out).rstrip().replace("`", "°")
 
 
 @dataclass
@@ -86,8 +87,10 @@ class Screen:
 
 
 SEG_RE = re.compile(r"\S+(?: \S+)*")
-LEFT_SEL_RE = re.compile(r"([A-Z0-9\-\.]{2,8})\s*<(?:SEL|ACT)>")
-RIGHT_SEL_RE = re.compile(r"<(SEL|ACT)>\s*([A-Z0-9\-\.]{2,8})")
+# Маркер вплотную к имени (не больше двух пробелов). Иначе <ACT> ВПП справа
+# прилипает к первому SID в списке слева.
+_MARKED_AFTER = re.compile(r"([A-Z0-9][A-Z0-9\-\.]{1,7})\s{0,2}<(?:SEL|ACT)>")
+_MARKED_BEFORE = re.compile(r"<(?:SEL|ACT)>\s{0,2}([A-Z0-9][A-Z0-9\-\.]{1,7})")
 
 
 def split_lr(row: str, width: int = WIDTH) -> Tuple[str, str]:
@@ -102,10 +105,27 @@ def split_lr(row: str, width: int = WIDTH) -> Tuple[str, str]:
     return " ".join(left).strip(), " ".join(right).strip()
 
 
+def marked_in_row(row: str) -> List[Tuple[int, str]]:
+    """(позиция имени, имя), только если <SEL>/<ACT> стоит сразу рядом с ним."""
+    row = (row or "").upper()
+    found: List[Tuple[int, str]] = []
+    for rx in (_MARKED_AFTER, _MARKED_BEFORE):
+        for m in rx.finditer(row):
+            found.append((m.start(1), m.group(1)))
+    found.sort()
+    out: List[Tuple[int, str]] = []
+    seen = set()
+    for pos, name in found:
+        if pos in seen:
+            continue
+        seen.add(pos)
+        out.append((pos, name))
+    return out
+
+
 def selected(seg: str) -> Optional[str]:
-    if "<SEL>" in seg or "<ACT>" in seg:
-        return seg.replace("<SEL>", "").replace("<ACT>", "").strip()
-    return None
+    marks = marked_in_row(seg)
+    return marks[0][1] if marks else None
 
 
 def page_no(title: str) -> Tuple[int, int]:
@@ -137,7 +157,7 @@ def _section(label: str, current: str, names: Dict[str, str]) -> str:
 
 
 def is_placeholder(v: str) -> bool:
-    return not v or set(v) <= set("-_.*□ ") or v.startswith("<") or v.endswith(">")
+    return not v or set(v) <= set("-_.*□ °`") or v.startswith("<") or v.endswith(">")
 
 
 class CduCollector:
@@ -222,21 +242,23 @@ class CduCollector:
 
     # ---- DEP / ARR ----
     def _proc_page(self, sc: Screen, left_names, right_names, src) -> Dict[str, str]:
-        """Страницы DEP/ARR: слева пункты с суффиксом «<SEL>/<ACT>», справа — с префиксом.
-        Колонки определяем по маркеру, а не по позиции (строки бывают «слипшимися»)."""
+        """Страницы DEP/ARR. Имя берём только с маркером <SEL>/<ACT> в той же половине строки.
+
+        Список вылетов без маркера (UUEE DEPARTURES 1/10) — это доступные схемы, не выбранная.
+        Маркер ВПП справа не должен прилипать к имени SID слева через длинный пробел.
+        """
         lsec = rsec = ""
         out: Dict[str, str] = {}
+        half = WIDTH // 2
         for lab, dat in sc.rows:
             ll, lr = split_lr(lab.upper())
             lsec = _section(ll, lsec, left_names) if ll else lsec
             rsec = _section(lr, rsec, right_names) if lr else rsec
-            d = dat.upper()
-            m = LEFT_SEL_RE.search(d)
-            if m and lsec and m.start(1) < WIDTH // 2:
-                out[lsec] = m.group(1)
-            m = RIGHT_SEL_RE.search(d)
-            if m and rsec and m.start() >= WIDTH // 2 - 2:
-                out[rsec] = m.group(2)
+            for pos, name in marked_in_row(dat):
+                if pos < half and lsec:
+                    out[lsec] = name
+                elif pos >= half and rsec:
+                    out[rsec] = name
         return out
 
     def _feed_dep(self, sc: Screen) -> bool:
@@ -310,12 +332,13 @@ class CduCollector:
         for k, (src, v) in self.fields.items():
             fp.set(k, v, src)
         ents = self.route_entries()
-        # SID/STAR по странице RTE (VIA «LAKI1G» TO «LAKIB»), если не выбраны на DEP/ARR — менее надёжно
-        if ents:
-            v0, t0 = ents[0]
+        # SID/STAR по чистой странице RTE (VIA «LAKI1G» TO «LAKIB»), если на DEP/ARR нет <ACT>.
+        # Кривой разбор (дубли, ВПП, INTC) схему не даёт: это не выбранный пункт.
+        if ents and _rte_reliable(ents):
+            v0, _t0 = ents[0]
             if PROC_RE.match(v0) and not AIRWAY_RE.match(v0):
                 fp.set("sid", v0, "CDU RTE(VIA)")
-            vl, tl = ents[-1]
+            vl, _tl = ents[-1]
             if len(ents) > 1 and PROC_RE.match(vl) and not AIRWAY_RE.match(vl):
                 fp.set("star", vl, "CDU RTE(VIA)")
         legs = []
@@ -325,6 +348,47 @@ class CduCollector:
             fp.waypoints = [Waypoint(i) for i in legs if i not in (fp.origin, fp.dest)]
             fp.sources["waypoints"] = "CDU LEGS"
         elif ents:
-            fp.waypoints = [Waypoint(t, via=v) for v, t in ents if t and not is_placeholder(t)]
-            fp.sources["waypoints"] = "CDU RTE"
+            wpts = _rte_waypoints(ents)
+            if wpts:
+                fp.waypoints = wpts
+                fp.sources["waypoints"] = "CDU RTE"
         return fp.finalize()
+
+
+def _junk_ident(ident: str) -> bool:
+    tok = (ident or "").split()[0].upper()
+    if not tok:
+        return True
+    if tok.startswith("RW") or "INTC" in tok or norm_rwy(tok):
+        return True
+    return False
+
+
+def _rte_reliable(ents: List[Tuple[str, str]]) -> bool:
+    """VIA/TO похожи на настоящую страницу RTE, а не на обрывки списка участков."""
+    tos: List[str] = []
+    for via, to in ents:
+        for part in (via, to):
+            if not part:
+                continue
+            if len(part.split()) != 1 or _junk_ident(part):
+                return False
+        if to:
+            if to in tos:
+                return False
+            tos.append(to)
+    return bool(tos)
+
+
+def _rte_waypoints(ents: List[Tuple[str, str]]) -> List[Waypoint]:
+    out: List[Waypoint] = []
+    seen = set()
+    for via, to in ents:
+        if not to or is_placeholder(to):
+            continue
+        ident = to.split()[0].upper()
+        if _junk_ident(ident) or is_placeholder(ident) or ident in seen:
+            continue
+        seen.add(ident)
+        out.append(Waypoint(ident, via=via))
+    return out

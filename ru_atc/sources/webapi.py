@@ -89,25 +89,44 @@ def rest_get(host: str, port: int, path: str, timeout: float = 3.0):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _printable_ratio(s: str) -> float:
+    if not s:
+        return 1.0
+    good = sum(1 for c in s if 32 <= ord(c) < 127 or c in "\r\n\t")
+    return good / len(s)
+
+
 def decode_data_value(val) -> str:
-    """Значение dataref типа data (строка Zibo) приходит base64-строкой -> обычная строка."""
+    """Значение dataref типа data -> обычная строка.
+
+    Ранний Web API отдавал data как base64. В v3 (дамп CDU Zibo, ноябрь 2026) это уже
+    обычный текст: «ACT PERF INIT», legs_pth «TFTFDF…». Строгий base64 принимаем только
+    если декод сам похож на текст; иначе оставляем исходную строку (она случайно
+    состоит из алфавита base64).
+    """
     if val is None:
         return ""
     if isinstance(val, (bytes, bytearray)):
         raw = bytes(val)
-    elif isinstance(val, str):
-        try:
-            raw = base64.b64decode(val, validate=False)
-        except (binascii.Error, ValueError):
-            return val
-    elif isinstance(val, list):   # на всякий случай: массив байтов
+        return raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
+    if isinstance(val, list):   # на всякий случай: массив байтов
         try:
             raw = bytes(int(x) & 0xFF for x in val)
         except (TypeError, ValueError):
             return ""
-    else:
+        return raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
+    if not isinstance(val, str):
         return str(val)
-    return raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
+    try:
+        raw = base64.b64decode(val, validate=True)
+    except (binascii.Error, ValueError):
+        return val
+    dec = raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
+    if val.strip() and not dec:
+        return val
+    if _printable_ratio(val) >= 0.9 and _printable_ratio(dec) < 0.9:
+        return val
+    return dec
 
 
 class WebApiRest:

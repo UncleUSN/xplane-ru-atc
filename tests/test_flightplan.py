@@ -8,10 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from fmc_fixtures import (ARR, DEP, FMS_1100, FMS_UNKNOWN_DEST, FMS_V3, OTHER, PERF, RTE1, RTE2, RTE3, b64, ln,
-                          screen_values)
+from fmc_fixtures import (ARR, DEP, DEP_LIST, FMS_1100, FMS_UNKNOWN_DEST, FMS_V3, OTHER, PERF, PERF_REAL,
+                          RTE1, RTE2, RTE3, RTE_DUMP_P1, RTE_DUMP_P2, RTE_DUMP_P3, UUEE_ULLI_ENROUTE,
+                          UUEE_ULLI_LEGS, UUEE_ULLI_PTH, ZIBO_UUEE_ULLI, b64, ln, screen_values)
 from ru_atc.flightplan.cdu import CduCollector, Screen, overlay, page_kind, split_lr
-from ru_atc.flightplan.fms_file import fms_dir, latest_fms, parse_fms
+from ru_atc.flightplan.fms_file import fms_dir, fms_dir_missing_message, latest_fms, parse_fms
 from ru_atc.flightplan.model import FlightPlan, approach_runway, norm_rwy, parse_cruise_fl
 from ru_atc.flightplan.provider import FlightPlanProvider
 from ru_atc.flightplan import zibo_refs
@@ -145,8 +146,121 @@ def test_zibo_value_heuristics():
             "laminar/B738/fms/legs_lat": [55.6, 55.7, 0.0], "laminar/B738/fms/legs_lon": [37.1, 37.2, 0.0]}
     p = zibo_refs.plan_from_values(vals)
     assert (p.origin, p.dest, p.sid, p.cruise_fl) == ("UUWW", "UUEE", "ABC1A", 320)
-    assert p.route_idents() == ["KUPAN", "RW06"] and p.waypoints[1].lat == 55.7
+    # RW06 — ВПП, не точка маршрута; num_of_wpts=2 отрезает BILGA. Координата остаётся у своего участка.
+    assert p.route_idents() == ["KUPAN"] and "BILGA" not in p.route_idents()
+    assert p.waypoints[0].lat == 55.6 and p.dep_rwy == "06"
     assert zibo_refs.is_interesting("laminar/B738/fms/dest_icao") and not zibo_refs.is_interesting("laminar/B738/fms/vnav_idx")
+
+
+def test_real_dump_legs_are_enroute_without_bogus_approach():
+    """Дамп UUEE→ULLI: legs — источник маршрута, fmc_gw_app — не заход."""
+    p = zibo_refs.plan_from_values(ZIBO_UUEE_ULLI)
+    assert (p.origin, p.dest, p.dep_rwy, p.arr_rwy) == ("UUEE", "ULLI", "24C", "28L")
+    assert p.sources["origin"] == "Zibo dataref ref_icao"
+    assert p.sources["arr_rwy"] == "Zibo dataref dest_runway"
+    assert p.sid == "" and p.star == "" and p.approach == ""
+    assert "fmc_gw_app" not in " ".join(p.sources.values())
+    assert p.route_idents() == UUEE_ULLI_ENROUTE
+    assert p.sources["waypoints"] == "Zibo dataref legs"
+    # KUSIP — третий участок (индекс 2), не первый оставшийся после фильтра.
+    assert p.waypoints[0].ident == "KUSIP" and p.waypoints[0].lat == pytest.approx(55.9098)
+    assert p.waypoints[0].lon == pytest.approx(37.00689)
+    assert p.route_nm == pytest.approx(396.603533744812)
+    assert p.dist_dest_nm == pytest.approx(356.9414219856262)
+    assert len(UUEE_ULLI_PTH) == 2 * 26 and "(INTC)" in UUEE_ULLI_LEGS
+
+
+def test_flight09_fills_airports_when_icao_refs_missing():
+    vals = {"laminar/B738/fms/flight09": "UUEE - ULLI", "laminar/B738/fms/flight09b": "TO KUSIP  1100FT"}
+    p = zibo_refs.plan_from_values(vals)
+    assert (p.origin, p.dest) == ("UUEE", "ULLI")
+    assert p.sources["origin"] == "Zibo dataref flight09"
+
+
+def test_dep_list_without_act_does_not_pick_sid():
+    c = CduCollector()
+    c.feed(Screen.from_values(RTE_DUMP_P1))
+    c.feed(Screen.from_values(DEP_LIST))
+    p = c.plan()
+    assert p.sid == "" and p.dep_rwy == "24C" and p.origin == "UUEE"
+    # пролистывание списка не должно подменять SID на другую строку
+    other = screen_values(ln(" UUEE DEPARTURES", "4/10"), [
+        (ln(" SIDS", "RUNWAYS"), ln("TOKN3H", "<ACT> RW24C")),
+    ])
+    c.feed(Screen.from_values(other))
+    assert c.plan().sid == ""
+    chosen = screen_values(ln(" UUEE DEPARTURES", "4/10"), [
+        (ln(" SIDS", "RUNWAYS"), ln("<ACT> TOKN3H", "06L")),
+    ])
+    c.feed(Screen.from_values(chosen))
+    assert c.plan().sid == "TOKN3H" and c.plan().sources["sid"] == "CDU DEP"
+
+
+def test_rte_garbage_does_not_guess_sid_or_keep_runway():
+    c = CduCollector()
+    for page in (RTE_DUMP_P1, RTE_DUMP_P2, RTE_DUMP_P3):
+        c.feed(Screen.from_values(page))
+    p = c.plan()
+    assert p.sid == "" and p.star == ""
+    assert "RW28L" not in p.route_idents() and p.route_idents().count("TOKNU") <= 1
+    assert "D245S" in p.route_idents()          # точка ухода остаётся, пока нет списка legs
+
+
+def test_real_perf_init_layers_and_cruise():
+    sc = Screen.from_values(PERF_REAL)
+    assert sc.title.strip().startswith("ACT PERF INIT") and "1/2" in sc.title
+    zfw = sc.rows[2][1]
+    assert "43.1" in zfw and "°F" in zfw and "°C" in zfw
+    c = CduCollector()
+    assert c.feed(sc) and c.plan().cruise_fl == 330 and c.plan().sources["cruise_fl"] == "CDU PERF INIT"
+
+
+def test_provider_real_dump_overrides_cdu_garbage(cfg):
+    vals = dict(ZIBO_UUEE_ULLI)
+    vals.update(RTE_DUMP_P1)
+    p, got = provider(cfg, vals)
+    assert p.poll_once(now=1000.0)
+    for i, page in enumerate((RTE_DUMP_P2, RTE_DUMP_P3, DEP_LIST, PERF_REAL), 1):
+        for k in list(p.rest.values):
+            if "/fmc1/" in k:
+                p.rest.values[k] = ""
+        p.rest.values.update(page)
+        p.poll_once(now=1000.0 + i)
+    fp = p.plan
+    assert (fp.origin, fp.dep_rwy, fp.dest, fp.arr_rwy, fp.cruise_fl) == ("UUEE", "24C", "ULLI", "28L", 330)
+    assert fp.sid == "" and fp.approach == ""
+    assert fp.route_idents() == UUEE_ULLI_ENROUTE
+    assert fp.sources["waypoints"] == "Zibo dataref legs"
+    assert fp.waypoints[0].has_pos
+    assert got[-1].route_idents() == UUEE_ULLI_ENROUTE
+
+
+def test_fms_missing_message_names_path_and_config():
+    msg = fms_dir_missing_message(r"D:\X-Plane 12")
+    assert r"D:\X-Plane 12" in msg and "Output" in msg and "FMS plans" in msg
+    assert "flight_plan_import.xplane_path" in msg and "config.yaml" in msg
+    auto = fms_dir_missing_message("")
+    assert "flight_plan_import.xplane_path" in auto
+
+
+def test_decode_keeps_plain_cdu_text():
+    from ru_atc.sources.webapi import decode_data_value
+    plain = " 10.0/14.4      ---`/---"
+    assert decode_data_value(plain) == plain
+    assert decode_data_value("            ----   ---") == "            ----   ---"
+    assert decode_data_value(UUEE_ULLI_PTH) == UUEE_ULLI_PTH
+    encoded = b64("UUEE\x00\x00")
+    assert decode_data_value(encoded) == "UUEE"
+
+
+def test_dist_to_go_uses_zibo_when_no_waypoint_coords(cfg, airspace):
+    ctl = make_ctl(cfg, airspace)
+    s = sim_at(ctl.dep, None)
+    direct = ctl.dist_to_go_km(s)
+    ctl.apply_plan(FlightPlan(origin="UUEE", dest="ULLI", dist_dest_nm=356.9))
+    along = ctl.dist_to_go_km(s)
+    assert along == pytest.approx(max(direct, 356.9 * 1.852), abs=0.05)
+    assert along > direct
 
 
 # ---------------------------------------------------------------- провайдер (без сети)

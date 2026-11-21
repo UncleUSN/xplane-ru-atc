@@ -226,6 +226,9 @@ class Controller:
             return direct
         pts = [(w.lat, w.lon) for w in self.plan.waypoints if w.has_pos]
         if len(pts) < 2:
+            # Нет координат точек — остаток из FMS Zibo (dist_dest, м. мили), он длиннее прямой.
+            if self.plan.dist_dest_nm:
+                return max(direct, self.plan.dist_dest_nm * 1.852)
             return direct
         pts.append((self.arr.lat, self.arr.lon))
         i = min(range(len(pts) - 1), key=lambda k: haversine_km(s.lat, s.lon, *pts[k]))
