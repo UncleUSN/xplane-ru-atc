@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ru_atc.config import load_config, resolve_path  # noqa: E402
 from ru_atc.flightplan.cdu import Screen, page_kind  # noqa: E402
-from ru_atc.flightplan.fms_file import fms_dir, guess_xplane_paths, list_fms, load_fms  # noqa: E402
+from ru_atc.flightplan.fms_file import fms_dir, fms_dir_missing_message, list_fms, load_fms  # noqa: E402
 from ru_atc.flightplan.provider import FlightPlanProvider  # noqa: E402
 
 
@@ -141,10 +141,7 @@ def run(cfg, watch: float):
     xp = cfg["flight_plan_import"].get("xplane_path") or ""
     d = fms_dir(xp)
     if d is None:
-        print(f"  папка Output/FMS plans не найдена ({'xplane_path=' + xp if xp else 'автопоиск'}).")
-        if not xp:
-            print("  Проверены: " + "; ".join(str(x) for x in guess_xplane_paths()[:6]))
-            print("  Укажите flight_plan_import.xplane_path в config.yaml или --xplane \"D:/X-Plane 12\"")
+        print("  " + fms_dir_missing_message(xp))
     else:
         print(f"  {d}")
         files = list_fms(d, 5)

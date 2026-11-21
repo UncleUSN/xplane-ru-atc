@@ -116,6 +116,20 @@ def guess_xplane_paths() -> List[Path]:
     return res
 
 
+def fms_dir_missing_message(xplane_path: str = "") -> str:
+    """Пояснение, если Output/FMS plans не найдена: какой путь смотрели и куда писать настройку."""
+    if xplane_path:
+        tried = str(Path(xplane_path) / "Output" / "FMS plans")
+        where = f"проверен путь {tried}"
+    else:
+        cands = [str(p / "Output" / "FMS plans") for p in guess_xplane_paths()[:6]]
+        where = ("автопоиск, проверены: " + "; ".join(cands)) if cands else "автопоиск ничего не дал"
+    return (f"папка Output/FMS plans не найдена ({where}). "
+            "Укажите flight_plan_import.xplane_path в config.yaml — папка установки X-Plane 12, "
+            "например \"D:/X-Plane 12\" (внутри неё должна быть Output/FMS plans), "
+            "или запустите python tools/fmcdump.py --xplane \"D:/X-Plane 12\".")
+
+
 def fms_dir(xplane_path: str = "") -> Optional[Path]:
     """Папка Output/FMS plans: из настройки или автопоиском. None — не найдена."""
     paths = [Path(xplane_path)] if xplane_path else guess_xplane_paths()

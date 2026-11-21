@@ -1,8 +1,10 @@
 """Источник плана полёта: FMC Zibo (экран CDU + datarefs laminar/B738/fms/*) через Web API,
 последний .fms из <X-Plane>/Output/FMS plans и config.yaml как запасной вариант.
 
-Приоритет полей: CDU (страницы DEP/ARR, RTE, PERF INIT) > datarefs Zibo > .fms (только если
-ADEP/ADES совпадают с FMC или FMC пуст) > config.yaml (решает контроллер).
+Приоритет полей: CDU (DEP/ARR только с <SEL>/<ACT>, RTE, PERF INIT) > datarefs Zibo
+(ref_icao, ВПП, dest_*) > .fms, если аэропорты совпадают или FMC пуст > config.yaml.
+Точки маршрута: список legs Zibo (с координатами) важнее экрана CDU и файла .fms.
+.fms даёт точки, только если живого списка legs нет.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .cdu import CduCollector, Screen, cdu_dataref_names, page_kind
-from .fms_file import fms_dir, latest_fms, list_fms, load_fms
+from .fms_file import fms_dir, fms_dir_missing_message, latest_fms, list_fms, load_fms
 from .model import FlightPlan
 from . import zibo_refs
 
@@ -21,7 +23,9 @@ log = logging.getLogger(__name__)
 
 RELEVANT_PAGES = ("rte", "dep", "arr", "perf", "legs")
 KNOWN_FMS_REFS = ["laminar/B738/fms/legs", "laminar/B738/fms/num_of_wpts", "laminar/B738/fms/legs_lat",
-                  "laminar/B738/fms/legs_lon"]
+                  "laminar/B738/fms/legs_lon", "laminar/B738/fms/legs_pth", "laminar/B738/fms/ref_icao",
+                  "laminar/B738/fms/ref_runway", "laminar/B738/fms/dest_icao", "laminar/B738/fms/dest_runway",
+                  "laminar/B738/fms/flight09", "laminar/B738/FMS/dist_dest", "laminar/B738/FMS/fpln_dist"]
 MAX_ZIBO_REFS = 80
 
 
@@ -141,7 +145,7 @@ class FlightPlanProvider:
         d = fms_dir(self.xplane_path)
         if d is None:
             if self.xplane_path:
-                self._err(f"папка 'Output/FMS plans' не найдена в {self.xplane_path}")
+                self._err(fms_dir_missing_message(self.xplane_path))
             self.fms_plan, self.fms_path = None, None
             return
         f = latest_fms(d, live.origin, live.dest, self.max_age_h)
@@ -164,12 +168,17 @@ class FlightPlanProvider:
         # datarefs Zibo не должны противоречить экрану: берём, только если аэропорты не конфликтуют
         if not ((live.origin and zp.origin and live.origin != zp.origin) or
                 (live.dest and zp.dest and live.dest != zp.dest)):
+            # Живой список legs важнее точек с экрана RTE (там дубли, ВПП и уход на второй круг).
+            if zp.waypoints:
+                live.waypoints = list(zp.waypoints)
+                live.sources["waypoints"] = zp.sources.get("waypoints", "Zibo dataref legs")
             live.fill_from(zp)
         fp = live
         f = self.fms_plan
         if f is not None and (not fp.origin or fp.origin == f.origin) and (not fp.dest or fp.dest == f.dest):
+            zibo_route = str(fp.sources.get("waypoints", "")).startswith("Zibo")
             route_ok = any(w.has_pos for w in f.waypoints)
-            if route_ok:     # точки с координатами лучше идентификаторов с экрана
+            if route_ok and not zibo_route:
                 fp.waypoints = list(f.waypoints)
                 fp.sources["waypoints"] = f.sources.get("waypoints", "fms")
             fp.fill_from(f)
@@ -200,17 +209,21 @@ class FlightPlanProvider:
             live = self.collector.plan()
             self.read_fms(live)
             self.next_fms = now + 10.0
-        self.plan = self.merge()
-        key = self.plan.key()
-        if key != self._last_key:
-            self._last_key = key
-            if self.on_change and not self.plan.is_empty():
-                try:
-                    self.on_change(self.plan)
-                except Exception:
-                    log.exception("on_change")
-            return True
-        return False
+        new = self.merge()
+        key = new.key()
+        # Остаток пути меняется постоянно — не дёргаем слушателя, но обновляем тот же объект плана.
+        if self._last_key is not None and key == self._last_key:
+            self.plan.route_nm = new.route_nm
+            self.plan.dist_dest_nm = new.dist_dest_nm
+            return False
+        self.plan = new
+        self._last_key = key
+        if self.on_change and not self.plan.is_empty():
+            try:
+                self.on_change(self.plan)
+            except Exception:
+                log.exception("on_change")
+        return True
 
     # ------------------------------------------------------------ поток
     def start(self) -> None:

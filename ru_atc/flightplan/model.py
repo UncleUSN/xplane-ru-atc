@@ -28,9 +28,15 @@ def norm_rwy(v) -> str:
 
 
 def norm_proc(v) -> str:
+    # Числа (117.0 из fmc_gw_app и т.п.) — не имя схемы.
+    if isinstance(v, (int, float)):
+        return ""
     v = str(v or "").strip().upper()
     v = v.replace("<SEL>", "").replace("<ACT>", "").strip()
+    v = v.replace("`", "").replace("°", "")
     if not v or set(v) <= set("-.*_ ") or v in ("NONE", "DIRECT", "VECTORS", "VECTOR"):
+        return ""
+    if re.fullmatch(r"\d+(?:\.\d+)?", v):
         return ""
     return v if re.match(r"^[A-Z0-9\-\.]{2,8}$", v) else ""
 
@@ -94,6 +100,8 @@ class FlightPlan:
     waypoints: List[Waypoint] = field(default_factory=list)
     origin_pos: Optional[Tuple[float, ...]] = None     # (lat, lon, превышение ft) аэродромов из .fms
     dest_pos: Optional[Tuple[float, ...]] = None
+    route_nm: Optional[float] = None                    # laminar/B738/FMS/fpln_dist, м. мили, весь маршрут
+    dist_dest_nm: Optional[float] = None                # laminar/B738/FMS/dist_dest, м. мили, остаток
     sources: Dict[str, str] = field(default_factory=dict)   # поле -> откуда взято
 
     def set(self, name: str, value, source: str, overwrite: bool = False) -> bool:
@@ -117,6 +125,10 @@ class FlightPlan:
         if not self.waypoints and other.waypoints:
             self.waypoints = list(other.waypoints)
             self.sources["waypoints"] = source or other.sources.get("waypoints", "?")
+        if self.route_nm is None and other.route_nm:
+            self.route_nm = other.route_nm
+        if self.dist_dest_nm is None and other.dist_dest_nm:
+            self.dist_dest_nm = other.dist_dest_nm
 
     def finalize(self) -> "FlightPlan":
         if not self.arr_rwy and self.approach:
