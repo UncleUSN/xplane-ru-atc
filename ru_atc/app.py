@@ -67,6 +67,21 @@ class App:
         if demo:
             from .sources.mock import ScriptedPilot
             self.pilot_bot = ScriptedPilot(self.ctl, self.source.flight)
+        # План полёта из FMC Zibo / .fms. В mock-режиме не используется (маршрут демо берётся из config.yaml)
+        self.fp_provider = None
+        if not demo and cfg["sim"].get("source") != "mock":
+            from .flightplan import FlightPlanProvider
+            prov = FlightPlanProvider(cfg, on_change=self._on_plan)
+            if prov.mode not in ("config", "off", "none"):
+                self.fp_provider = prov
+
+    def _on_plan(self, plan):
+        with self.lock:
+            msgs = self.ctl.apply_plan(plan)
+        self.ui_q.put(("info", f"План полёта ({', '.join(sorted(set(v.split(' ')[0] for v in plan.sources.values())))}): "
+                               f"{plan.summary()}"))
+        for m in msgs:
+            self.ui_q.put(("hint_text", m))
 
     # ---------- голос ----------
     def init_voice(self):
@@ -199,6 +214,8 @@ class App:
 
     def start(self):
         self.source.start()
+        if self.fp_provider:
+            self.fp_provider.start()
         self.stop_ev = threading.Event()
         threading.Thread(target=self.loop, args=(self.stop_ev,), daemon=True).start()
         threading.Thread(target=self.init_voice, daemon=True).start()
@@ -206,13 +223,15 @@ class App:
     def stop(self):
         self.stop_ev.set()
         self.source.stop()
+        if self.fp_provider:
+            self.fp_provider.stop()
 
 
 def fmt_state(s, st) -> str:
     return (f"[{st['phase']}] {PHASE_RU.get(__import__('ru_atc.phases', fromlist=['Phase']).Phase(st['phase']), '')} | "
             f"COM1 {s.com1_khz / 1000:.3f} | ALT {s.alt_ind_ft:.0f} ft | IAS {s.ias_kt:.0f} | GS {s.gs_kt:.0f} | "
             f"VS {s.vs_fpm:+.0f} | SQ {s.xpdr_code:04d}/{s.xpdr_mode} | Разреш.: {st['cleared']} | "
-            f"Орган: {st['controlling']}")
+            f"Орган: {st['controlling']} | План: {st.get('plan', '-')}")
 
 
 def run_console(app: App):
@@ -260,6 +279,7 @@ def main(argv=None):
     ap.add_argument("--demo", action="store_true", help="демо: модель полёта + автоматический пилот")
     ap.add_argument("--console", action="store_true", help="консольный интерфейс вместо окна")
     ap.add_argument("--no-voice", action="store_true", help="без голоса (только текст)")
+    ap.add_argument("--compact", action="store_true", help="запустить компактной полупрозрачной панелью")
     ap.add_argument("--dep", help="аэродром вылета (ICAO)")
     ap.add_argument("--arr", help="аэродром назначения (ICAO)")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -273,10 +293,12 @@ def main(argv=None):
         cfg["flight_plan"]["arrival"] = a.arr.upper()
     if a.demo:
         cfg["sim"]["source"] = "mock"
+    if a.compact:
+        cfg["ui"]["start_compact"] = True
     logp = setup_logging(cfg.get("log_dir", "logs"), a.verbose)
     app = App(cfg, demo=a.demo, no_voice=a.no_voice)
     print(f"Лог: {logp}")
-    if a.console or cfg.get("ui") == "console":
+    if a.console or (cfg.get("ui") or {}).get("mode") == "console":
         run_console(app)
     else:
         try:

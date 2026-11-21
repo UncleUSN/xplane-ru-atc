@@ -7,12 +7,13 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
-from .airspace import Airport, Airspace, Runway, Unit, angle_diff
+from .airspace import Airport, Airspace, Runway, Unit, angle_diff, haversine_km
 from .events import Hint, PilotMessage, Transmission
 from .model import SimState
 from .phases import Phase, PhaseTracker
 from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
+from .flightplan.model import FlightPlan
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +101,140 @@ class Controller:
         self.tracker.listeners.append(self._on_phase)
         self._phase_events: List[Event] = []
         self.sim: SimState = SimState()
+        self.plan: Optional[FlightPlan] = None         # план из FMC/.fms (None — только config.yaml)
+        self.airlines: Dict[str, str] = dict(cfg.get("airlines") or {})
+
+    # ------------------------------------------------------------------ план полёта (FMC Zibo / .fms)
+    def _plan_for(self, icao: str) -> Optional[FlightPlan]:
+        return self.plan if self.plan and icao in (self.plan.origin, self.plan.dest) else None
+
+    def _forced_dep_rwy(self) -> str:
+        if self.plan and self.plan.origin == self.dep.icao and self.plan.dep_rwy:
+            return self.plan.dep_rwy
+        fp = self.cfg["flight_plan"]
+        return fp.get("departure_runway", "") if fp.get("departure") == self.dep.icao else ""
+
+    def _forced_arr_rwy(self) -> str:
+        if self.plan and self.plan.dest == self.arr.icao and self.plan.arr_rwy:
+            return self.plan.arr_rwy
+        fp = self.cfg["flight_plan"]
+        return fp.get("arrival_runway", "") if fp.get("arrival") == self.arr.icao else ""
+
+    def sid(self) -> Tuple[str, str]:
+        if self.plan and self.plan.origin == self.dep.icao and self.plan.sid:
+            return self.plan.sid, self.plan.sid_trans
+        fp = self.cfg["flight_plan"]
+        return (fp.get("sid") or "", "") if fp.get("departure") == self.dep.icao else ("", "")
+
+    def star(self) -> str:
+        if self.plan and self.plan.dest == self.arr.icao and self.plan.star:
+            return self.plan.star
+        fp = self.cfg["flight_plan"]
+        return (fp.get("star") or "") if fp.get("arrival") == self.arr.icao else ""
+
+    def approach_kind(self) -> str:
+        """Тип захода для фразы: из FMC (ILS28R -> ILS, RNV24 -> RNAV), иначе по наличию ILS на ВПП."""
+        from .phraseology.names import approach_type
+        if self.plan and self.plan.dest == self.arr.icao and self.plan.approach:
+            t = approach_type(self.plan.approach)
+            if t:
+                return t
+        return "ILS" if (self.arr_rwy and self.arr_rwy.ils) else "RNAV"
+
+    @staticmethod
+    def _proc_tag(name: str) -> str:
+        import re as _re
+        return f"{{proc:{name}}}" if _re.fullmatch(r"[A-Z]{2,5}\d[A-Z]?", name or "") else name
+
+    def _make_airport(self, icao: str, pos, rwy: str) -> Optional[Airport]:
+        """Аэродром, которого нет в data/airports.yaml: минимальная запись по координатам из .fms
+        (все органы подменяет РЦ сектора). Без координат и ВПП — не создаём."""
+        if not pos or not rwy:
+            return None
+        lat, lon = pos[0], pos[1]
+        elev = pos[2] if len(pos) > 2 else 0.0
+        if not self.airspace.sector_at(lat, lon):
+            return None
+        try:
+            hdg = (int(rwy[:2]) * 10) % 360 or 360
+        except ValueError:
+            return None
+        ap = Airport(icao=icao, name=icao, name_gen=icao, lat=lat, lon=lon, elevation_ft=float(elev or 0),
+                     transition_altitude_ft=10000, transition_levels=[{"qnh_min": 0, "fl": 110}],
+                     squawk_range=("2000", "2077"), initial_climb={"alt_ft": 5000},
+                     runways=[Runway(rwy, float(hdg))], units={},
+                     preferred_departure=[rwy], preferred_arrival=[rwy])
+        self.airspace.airports[icao] = ap
+        return ap
+
+    def apply_plan(self, plan: Optional[FlightPlan]) -> List[str]:
+        """Принять план из FMC. Возвращает сообщения для окна. Без плана — работаем по config.yaml."""
+        msgs: List[str] = []
+        if plan is None or plan.is_empty():
+            return msgs
+        self.plan = plan
+        on_ground_dep = self.phase in GROUND_DEP_PHASES and not self.flags["takeoff"]
+        # аэродром вылета — только пока не взлетели
+        if plan.origin and plan.origin != self.dep.icao and on_ground_dep:
+            ap = self.airspace.airports.get(plan.origin) or self._make_airport(plan.origin, plan.origin_pos, plan.dep_rwy)
+            if ap:
+                self.dep, self.dep_rwy = ap, None
+                msgs.append(f"Аэродром вылета из FMC: {ap.icao}")
+            else:
+                msgs.append(f"Аэродрома {plan.origin} нет в data/airports.yaml — вылет остаётся {self.dep.icao}")
+        if plan.dest and plan.dest != self.arr.icao and not self.flags["approach"]:
+            ap = self.airspace.airports.get(plan.dest) or self._make_airport(plan.dest, plan.dest_pos, plan.arr_rwy)
+            if ap:
+                self.arr, self.arr_rwy = ap, None
+                msgs.append(f"Аэродром назначения из FMC: {ap.icao}")
+            else:
+                msgs.append(f"Аэродрома {plan.dest} нет в data/airports.yaml — назначение остаётся {self.arr.icao}")
+        if plan.dep_rwy and plan.origin == self.dep.icao and on_ground_dep:
+            rw = self.dep.runway(plan.dep_rwy)
+            if rw is None:
+                msgs.append(f"ВПП {plan.dep_rwy} из FMC нет у {self.dep.icao} в airports.yaml")
+            elif self.dep_rwy is None or rw.id != self.dep_rwy.id:
+                if self.flags["clearance"] and self.dep_rwy is not None:
+                    msgs.append(f"ВПП в FMC сменилась на {rw.id} после выдачи разрешения — запросите разрешение повторно")
+                self.dep_rwy = rw
+        if plan.arr_rwy and plan.dest == self.arr.icao and not self.flags["approach"]:
+            rw = self.arr.runway(plan.arr_rwy)
+            if rw is None:
+                msgs.append(f"ВПП {plan.arr_rwy} из FMC нет у {self.arr.icao} в airports.yaml")
+            else:
+                self.arr_rwy = rw
+        if plan.cruise_fl and plan.cruise_fl != self.cruise_fl:
+            self.cruise_fl = int(plan.cruise_fl)
+        if plan.flight_no and self.cfg.get("flight_plan_import", {}).get("callsign_from_fmc", True):
+            self._callsign_from_flight_no(plan.flight_no, msgs)
+        return msgs
+
+    def _callsign_from_flight_no(self, flt: str, msgs: List[str]) -> None:
+        import re as _re
+        m = _re.match(r"^([A-Z]{3})(\d{1,4}[A-Z]?)$", flt.upper())
+        if not m or m.group(1) not in self.airlines:
+            return
+        spoken, num = self.airlines[m.group(1)], m.group(2).lstrip("0") or "0"
+        if (self.r.cs_spoken, self.r.cs_number) != (spoken, num):
+            self.r.cs_spoken, self.r.cs_number = spoken, num
+            msgs.append(f"Позывной из FMC ({flt}): {spoken} {num}")
+
+    def dist_to_go_km(self, s: SimState) -> float:
+        """Остаток пути до аэродрома назначения: по точкам маршрута FMC (если есть координаты), иначе по прямой."""
+        direct = self.arr.distance_km(s.lat, s.lon)
+        if not self.plan or self.plan.dest != self.arr.icao:
+            return direct
+        pts = [(w.lat, w.lon) for w in self.plan.waypoints if w.has_pos]
+        if len(pts) < 2:
+            return direct
+        pts.append((self.arr.lat, self.arr.lon))
+        i = min(range(len(pts) - 1), key=lambda k: haversine_km(s.lat, s.lon, *pts[k]))
+        a, b = pts[i], pts[i + 1]
+        # если ближайшая точка уже пройдена (следующая ближе, чем отрезок) — идём к следующей
+        if haversine_km(s.lat, s.lon, *b) < haversine_km(a[0], a[1], *b):
+            i += 1
+        rest = haversine_km(s.lat, s.lon, *pts[i]) + sum(haversine_km(*pts[k], *pts[k + 1]) for k in range(i, len(pts) - 1))
+        return max(direct, rest)
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -398,15 +533,18 @@ class Controller:
 
     def _clearance_text(self, s: SimState) -> Tuple[str, Dict]:
         if not self.dep_rwy:
-            self.dep_rwy = self.dep.select_runway(s.wind_dir, s.wind_kt, False,
-                                                  self.cfg["flight_plan"].get("departure_runway", ""))
+            self.dep_rwy = self.dep.select_runway(s.wind_dir, s.wind_kt, False, self._forced_dep_rwy())
         if not self.squawk:
             self.squawk = self.dep.assign_squawk(self.rng)
         ic = self.initial_clearance()
         self.set_cleared(ic)
-        sid = self.cfg["flight_plan"].get("sid") or ""
+        sid, trans = self.sid()
         route = self.cfg["flight_plan"].get("route") or ""
-        sid_txt = f"выход по схеме {sid}" if sid else "выход по схеме согласно плану"
+        if self.plan and self.plan.origin == self.dep.icao:
+            route = "по плану"       # маршрут уже в FMC, перечислять точки в эфире не нужно
+        sid_txt = f"выход по схеме {self._proc_tag(sid)}" if sid else "выход по схеме согласно плану"
+        if sid and trans and trans != sid:
+            sid_txt += f" с переходом {{fix:{trans}}}"
         route_txt = f" по маршруту {route}" if route and route != "по плану" else " по плану"
         clr = "набор " + ("{fl:%d}" % ic.value if ic.kind == "fl" else "{alt:%d}" % ic.value)
         tpl = (f"{{cs}}, {self.unit_of(self.dep, 'delivery').callsign}, разрешено до {self.arr.name_gen}{route_txt}, "
@@ -535,8 +673,7 @@ class Controller:
 
     def _arrival_terminal_checkin(self, s, unit):
         if not self.arr_rwy:
-            self.arr_rwy = self.arr.select_runway(s.wind_dir, s.wind_kt, True,
-                                                  self.cfg["flight_plan"].get("arrival_runway", ""))
+            self.arr_rwy = self.arr.select_runway(s.wind_dir, s.wind_kt, True, self._forced_arr_rwy())
         units = self.arr_terminal_units()
         last_terminal = (not units) or self.same_unit(unit, units[-1])
         d = self.arr.distance_km(s.lat, s.lon)
@@ -547,21 +684,23 @@ class Controller:
         c = Clearance("alt", alt)
         self.set_cleared(c)
         self.flags["arr_approach_init"] = True
+        star = self.star()
+        star_txt = f"прибытие по схеме {self._proc_tag(star)}, " if star else ""
         return self.tx(unit, f"{{cs}}, {unit.callsign}, наблюдаю, снижайтесь до высоты {{alt:{alt}}}, "
-                             f"{{qnh:{self.qnh(s)}}}, ожидайте заход ILS ВПП {{rwy:{self.arr_rwy.id}}}", s,
+                             f"{{qnh:{self.qnh(s)}}}, {star_txt}ожидайте заход {self.approach_kind()} ВПП {{rwy:{self.arr_rwy.id}}}", s,
                        readback={"alt_ft": alt, "qnh": self.qnh(s)})
 
     def _approach_clearance(self, s, unit, greet=False):
         if not self.arr_rwy:
-            self.arr_rwy = self.arr.select_runway(s.wind_dir, s.wind_kt, True,
-                                                  self.cfg["flight_plan"].get("arrival_runway", ""))
+            self.arr_rwy = self.arr.select_runway(s.wind_dir, s.wind_kt, True, self._forced_arr_rwy())
         alt = int(math.ceil((self.arr.elevation_ft + 2000) / 100.0) * 100)
         c = Clearance("alt", alt)
         self.set_cleared(c)
         self.flags["approach"] = True
         self.flags["arr_approach_init"] = True
         g = f"{unit.callsign}, наблюдаю, " if greet else ""
-        appr = "ILS" if self.arr_rwy.ils else "по RNAV"
+        appr = self.approach_kind()
+        appr = appr if appr == "ILS" else f"по {appr}"
         return self.tx(unit, f"{{cs}}, {g}снижайтесь до высоты {{alt:{alt}}}, {{qnh:{self.qnh(s)}}}, "
                              f"заход {appr} ВПП {{rwy:{self.arr_rwy.id}}} разрешаю, доложите на посадочном", s,
                        readback={"alt_ft": alt, "qnh": self.qnh(s), "runway": self.arr_rwy.id})
@@ -587,7 +726,7 @@ class Controller:
         return above / 1000.0 * 3.0 * 1.852 + 20.0
 
     def _h_request_descent(self, msg, s, unit):
-        d = self.arr.distance_km(s.lat, s.lon)
+        d = self.dist_to_go_km(s)
         if unit.type == "control":
             if d > self.tod_km(s) + 60:
                 return self.tx(unit, f"{{cs}}, ожидайте снижение через {{km:{int((d - self.tod_km(s)) // 10 * 10)}}}", s)
@@ -598,7 +737,9 @@ class Controller:
         c = Clearance("fl", self.terminal_fl(self.arr))
         self.set_cleared(c)
         self.flags["descent"] = True
-        return self.tx(unit, f"{{cs}}, снижайтесь до {{fla:{c.value}}}", s, readback={"level": c.value})
+        star = self.star()
+        star_txt = f", ожидайте прибытие по схеме {self._proc_tag(star)}" if star else ""
+        return self.tx(unit, f"{{cs}}, снижайтесь до {{fla:{c.value}}}{star_txt}", s, readback={"level": c.value})
 
     def _h_request_approach(self, msg, s, unit):
         if unit.type == "control":
@@ -710,7 +851,7 @@ class Controller:
                     return out
             # снижение
             if self.cfg["atc"].get("auto_descent", True) and not self.flags["descent"] and \
-                    ph in (Phase.CRUISE, Phase.CLIMB, Phase.DESCENT) and d_arr <= self.tod_km(s):
+                    ph in (Phase.CRUISE, Phase.CLIMB, Phase.DESCENT) and self.dist_to_go_km(s) <= self.tod_km(s):
                 out.append(self._issue_descent(s, ctrl))
                 self.last_proactive_t = s.t
                 return out
@@ -881,4 +1022,6 @@ class Controller:
             "dep_rwy": self.dep_rwy.id if self.dep_rwy else "-",
             "arr_rwy": self.arr_rwy.id if self.arr_rwy else "-",
             "pending": ", ".join(f"{k}={v}" for k, v in self.pending.items.items()) if self.pending else "-",
+            "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
+            "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
         }

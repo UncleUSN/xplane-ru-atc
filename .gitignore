@@ -5,3 +5,4 @@ models/
 logs/
 config.yaml
 .pytest_cache/
+*.bak

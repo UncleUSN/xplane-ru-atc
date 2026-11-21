@@ -1,13 +1,15 @@
 """Шаблоны фраз диспетчера с разметкой чисел -> текст для экрана и текст для синтеза речи.
 
 Разметка: {cs} позывной, {fl:240}, {alt:6000}, {sq:1501}, {freq:118.7}, {rwy:24L},
-{qnh:998}, {wind:240/5} (направление/скорость м/с), {hdg:240}, {num:5}, {km:30}
+{qnh:998}, {wind:240/5} (направление/скорость м/с), {hdg:240}, {num:5}, {km:30},
+{proc:LAKI1G} схема SID/STAR, {fix:LAKIB} точка, {app:ILS28R} тип захода (ILS/RNAV/VOR...)
 """
 from __future__ import annotations
 
 import re
 from typing import Tuple
 
+from .names import approach_type, latin_to_speech, proc_to_words, translit
 from .numbers import (alt_to_words, digits_to_words, freq_display, freq_to_words, int_to_words,
                       level_to_words, runway_display, runway_to_words)
 
@@ -75,6 +77,8 @@ class Renderer:
             return f"{int(val):03d}"
         if tag == "km":
             return f"{int(val)} км"
+        if tag == "app":
+            return approach_type(val) or val
         return str(val)
 
     def _speech(self, tag: str, val: str) -> str:
@@ -105,12 +109,19 @@ class Renderer:
             return f"{int_to_words(int(val))} {_km_word(int(val))}"
         if tag == "num":
             return int_to_words(int(val))
+        if tag == "proc":
+            return proc_to_words(val)
+        if tag == "fix":
+            return translit(val)
+        if tag == "app":
+            return approach_type(val) or val
         return str(val)
 
     def render(self, template: str) -> Tuple[str, str]:
         disp = TAG_RE.sub(lambda m: self._display(m.group(1), m.group(2) or ""), template)
         speech = TAG_RE.sub(lambda m: self._speech(m.group(1), m.group(2) or ""), template)
         # В речи убираем символы, которые TTS читает плохо
-        speech = speech.replace("—", ",").replace("ВПП", "вэ пэ пэ").replace("ILS", "ИЛС")
+        speech = speech.replace("—", ",").replace("ВПП", "вэ пэ пэ")
+        speech = latin_to_speech(speech)
         speech = re.sub(r"\s+", " ", speech).strip()
         return disp, speech

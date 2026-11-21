@@ -15,6 +15,23 @@ flight_plan:
   arrival_runway: ""
   arrival_stand: ""        # стоянка прибытия; пусто -> "на стоянку по указанию"
 
+# Импорт плана из FMC Zibo 737 (имеет приоритет над flight_plan выше; без плана — работаем по flight_plan)
+flight_plan_import:
+  source: auto             # auto (CDU + datarefs Zibo + .fms) | fmc (только FMC) | fms (только файл) | config (выкл.)
+  fmc_side: 1              # 1 — CDU КВС (fmc1), 2 — второго пилота (fmc2)
+  poll_s: 2.0              # как часто читать экран CDU, с
+  xplane_path: ""          # папка X-Plane 12, напр. "D:/X-Plane 12" — для Output/FMS plans (пусто = автопоиск)
+  fms_max_age_h: 12        # .fms старше — не брать, если FMC ещё пуст
+  callsign_from_fmc: true  # позывной из FLT NO. (AFL1234 -> «Аэрофлот 1234», см. airlines)
+
+airlines:                  # ИКАО-код компании -> позывной в эфире (для FLT NO. из FMC)
+  AFL: Аэрофлот
+  SDM: Россия
+  PBD: Победа
+  SBI: Сибирь
+  UTA: Ютэйр
+  SVR: Свердловск авиа
+
 sim:
   source: webapi           # webapi | udp | mock
   host: localhost          # для WSL/другого ПК укажите IP компьютера с X-Plane
@@ -60,5 +77,17 @@ voice:
   radio_effect: true
   radio_noise: 0.015
 
-ui: tk                     # tk | console
+ui:
+  mode: tk                 # tk | console   (старая запись «ui: tk» тоже понимается)
+  always_on_top: true      # окно поверх X-Plane (только оконный/безрамочный режим X-Plane!)
+  topmost_reassert_s: 2.0  # раз в N с снова поднимать окно наверх, не забирая фокус (0 = выкл.)
+  start_compact: false     # стартовать компактной панелью (или ключ --compact)
+  compact_alpha: 0.85      # прозрачность компактной панели 0.2..1.0
+  full_alpha: 1.0
+  compact_geometry: "560x150-20+40"   # ШxВ и положение: -20 = 20 px от ПРАВОГО края, +40 = 40 px от верха
+  full_geometry: "1100x680"
+  compact_borderless: true # панель без рамки; перетаскивается мышью, двойной щелчок — полный режим
+  hotkey_toggle: "ctrl+shift+a"   # глобально: показать/спрятать окно ("" = выкл.)
+  hotkey_compact: "ctrl+shift+z"  # глобально: компактный/полный режим
+  focus_on_show: false     # false — после показа окна вернуть фокус X-Plane
 log_dir: logs

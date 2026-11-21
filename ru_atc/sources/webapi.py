@@ -10,10 +10,13 @@ ID datarefs действительны только в текущей сесси
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
@@ -68,6 +71,113 @@ def decode_update(data: Dict[str, object], id_map: Dict[int, List]) -> Dict[str,
     return out
 
 
+def normalize_host(host: str) -> str:
+    # "localhost" на Windows может уйти в IPv6 (::1) — X-Plane слушает IPv4
+    return "127.0.0.1" if str(host).strip().lower() == "localhost" else str(host).strip()
+
+
+def rest_get(host: str, port: int, path: str, timeout: float = 3.0):
+    """GET к Web API X-Plane, без системного прокси/VPN (urllib на Windows берёт прокси из реестра)."""
+    url = f"http://{host}:{port}{path}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        r = opener.open(req, timeout=timeout)
+    except OSError as e:
+        raise OSError(f"REST {url}: {e}") from e
+    with r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def decode_data_value(val) -> str:
+    """Значение dataref типа data (строка Zibo) приходит base64-строкой -> обычная строка."""
+    if val is None:
+        return ""
+    if isinstance(val, (bytes, bytearray)):
+        raw = bytes(val)
+    elif isinstance(val, str):
+        try:
+            raw = base64.b64decode(val, validate=False)
+        except (binascii.Error, ValueError):
+            return val
+    elif isinstance(val, list):   # на всякий случай: массив байтов
+        try:
+            raw = bytes(int(x) & 0xFF for x in val)
+        except (TypeError, ValueError):
+            return ""
+    else:
+        return str(val)
+    return raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
+
+
+class WebApiRest:
+    """Минимальный REST-клиент Web API: поиск id, полный список, чтение значений (в т.ч. строк)."""
+
+    def __init__(self, host: str = "localhost", port: int = 8086, api_version: str = "auto") -> None:
+        self.host, self.port = normalize_host(host), int(port)
+        self.api_version = api_version
+        self.ver = ""
+        self.info: Dict[str, Tuple[int, str]] = {}   # name -> (id, value_type)
+
+    def get(self, path: str, timeout: float = 3.0):
+        return rest_get(self.host, self.port, path, timeout)
+
+    def connect(self) -> str:
+        if self.api_version != "auto":
+            self.ver = self.api_version
+        else:
+            try:
+                caps = self.get("/api/capabilities")
+                versions = caps.get("api", {}).get("versions", [])
+                self.ver = sorted(versions, key=lambda v: int(v.lstrip("v")))[-1] if versions else "v1"
+            except Exception as e:
+                # capabilities нет в 12.1.1–12.1.3 (сервер ответит 404) — тогда v1;
+                # если сервер не отвечает вовсе — ошибка подключения
+                if not isinstance(e.__cause__, urllib.error.HTTPError):
+                    raise
+                self.ver = "v1"
+        return self.ver
+
+    def resolve(self, names: List[str]) -> Dict[str, Tuple[int, str]]:
+        found: Dict[str, Tuple[int, str]] = {}
+        for n in names:
+            for with_fields in (True, False):
+                try:
+                    res = self.get(f"/api/{self.ver}/datarefs?" + build_name_query([n], with_fields))
+                    for d in res.get("data", []):
+                        found[d["name"]] = (int(d["id"]), str(d.get("value_type", "")))
+                    break
+                except Exception:
+                    continue
+        self.info.update(found)
+        return found
+
+    def list_all(self, timeout: float = 30.0) -> List[Dict]:
+        res = self.get(f"/api/{self.ver}/datarefs", timeout=timeout)
+        return list(res.get("data", []))
+
+    def discover(self, prefixes: Tuple[str, ...]) -> Dict[str, Tuple[int, str]]:
+        """Все datarefs, чьё имя начинается с одного из префиксов (через полный список)."""
+        out: Dict[str, Tuple[int, str]] = {}
+        low = tuple(p.lower() for p in prefixes)
+        for d in self.list_all():
+            name = str(d.get("name", ""))
+            if name.lower().startswith(low):
+                out[name] = (int(d["id"]), str(d.get("value_type", "")))
+        self.info.update(out)
+        return out
+
+    def value(self, name: str, timeout: float = 2.0):
+        """Текущее значение dataref по имени (id должен быть найден resolve/discover).
+        Строки (тип data) возвращаются уже декодированными."""
+        did, vtype = self.info[name]
+        res = self.get(f"/api/{self.ver}/datarefs/{did}/value", timeout=timeout)
+        val = res.get("data") if isinstance(res, dict) else res
+        if vtype == "data" or (isinstance(val, str) and vtype in ("", "data")):
+            return decode_data_value(val)
+        return val
+
+
 class WebApiSource(DataSource):
     name = "webapi"
 
@@ -93,16 +203,7 @@ class WebApiSource(DataSource):
 
     # ---------- REST ----------
     def _get(self, path: str, timeout: float = 3.0):
-        url = f"http://{self.host}:{self.port}{path}"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        # Локальный X-Plane: никаких системных прокси/VPN (на Windows urllib берёт прокси из реестра)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        try:
-            r = opener.open(req, timeout=timeout)
-        except OSError as e:
-            raise OSError(f"REST {url}: {e}") from e
-        with r:
-            return json.loads(r.read().decode("utf-8"))
+        return rest_get(self.host, self.port, path, timeout)
 
     def detect_version(self) -> str:
         if self.api_version != "auto":
