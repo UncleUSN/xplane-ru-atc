@@ -1,0 +1,62 @@
+# Скопируйте в config.yaml и отредактируйте.
+callsign:
+  spoken: Сибирь         # как звучит позывной в эфире (компания)
+  number: "501"           # номер рейса (произносится по цифрам)
+  # Полный позывной: "Аэрофлот 1234". Для частного борта: spoken: "RA", number: "73123"
+
+flight_plan:
+  departure: UUEE
+  arrival: ULLI
+  cruise_fl: 360
+  route: "по плану"        # произносится в разрешении ("по маршруту ...")
+  sid: ""                  # напр. "ЛАКИБ 1Г"; пусто -> "выход по схеме согласно плану"
+  star: ""
+  departure_runway: ""     # пусто -> выбор по ветру/предпочтениям из airports.yaml
+  arrival_runway: ""
+  arrival_stand: ""        # стоянка прибытия; пусто -> "на стоянку по указанию"
+
+sim:
+  source: webapi           # webapi | udp | mock
+  host: localhost          # для WSL/другого ПК укажите IP компьютера с X-Plane
+  webapi_port: 8086
+  webapi_version: auto     # auto | v1 | v2 | v3
+  udp_port: 49000          # порт X-Plane для RREF
+  udp_listen_port: 49010   # наш порт для ответов
+  use_zibo_datarefs: true
+  mock_time_scale: 4.0     # ускорение времени в режиме mock
+
+atc:
+  strict_frequency: false   # отвечать, только если COM1 настроен на частоту органа
+  confirm_correct_readback: true   # "Правильно" после верного повторения
+  readback_timeout_s: 20
+  levels_digit_by_digit: false     # "эшелон двести сорок" (false) / "эшелон два четыре ноль" (true)
+  auto_descent: true       # РЦ сам даёт снижение у точки начала снижения
+  speed_limit_kt: 250      # учебная проверка скорости ниже 10000 ft (0 = выкл.)
+  voice_warnings: true     # озвучивать замечания диспетчера (отклонение от высоты и т.п.)
+
+voice:
+  enabled: true
+  ptt_key: "caps lock"     # клавиша (библиотека keyboard): "caps lock", "right ctrl", "f12"...
+  ptt_joystick: {device: 0, button: 3}       # {device: 0, button: 5} — кнопка джойстика через pygame
+  input_device: 1       # индекс/имя микрофона sounddevice (null = по умолчанию)
+  output_device: null
+  stt_engine: vosk         # vosk | whisper
+  vosk_model_path: models/vosk-model-ru-0.42
+  vosk_grammar: false      # true = ограничить словарь фразеологией (только small-модели); в тестах точнее оказался свободный режим
+  whisper_model: small     # tiny | base | small | medium (faster-whisper)
+  whisper_device: auto     # auto | cpu | cuda
+  tts_engine: silero       # silero | pyttsx3 | edge | none
+  silero_speaker: aidar    # aidar | baya | kseniya | xenia | eugene
+  unit_voices:             # разные голоса для разных органов (Silero)
+    delivery: baya
+    ground: eugene
+    tower: xenia
+    radar: aidar
+    approach: aidar
+    control: eugene
+  edge_voice: ru-RU-DmitryNeural
+  radio_effect: true
+  radio_noise: 0.015
+
+ui: tk                     # tk | console
+log_dir: logs

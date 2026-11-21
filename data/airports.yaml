@@ -1,0 +1,189 @@
+# =====================================================================================
+#  ДАННЫЕ АЭРОДРОМОВ — ПРИМЕР (SAMPLE). НЕ ДЛЯ РЕАЛЬНОЙ НАВИГАЦИИ.
+#  Частоты и позывные взяты из открытых источников для виртуальных сетей (ru.ivao.aero,
+#  карточки аэропортов XR-DIV, просмотрено 21.11.2026) и старых публикаций AIP РФ (2013).
+#  Они могут отличаться от действующего AIP РФ — сверяйте с AIP / актуальными картами
+#  (Navigraph/Jeppesen/caica.ru) и правьте под себя. Формат: YAML, кодировка UTF-8.
+#
+#  Поля:
+#    units.<тип>: delivery / ground / tower / radar (Круг) / approach (Подход)
+#      callsign — позывной для радиообмена, freq — МГц, voice — голос Silero (необязательно)
+#    runways: [{id, hdg (магнитный курс), ils (МГц, необязательно)}]
+#    transition_altitude_ft, transition_levels: [{qnh_min: гПа, fl: эшелон}] — сверху вниз
+#    squawk_range: [начало, конец] (восьмеричные коды)
+#    initial_climb: {alt_ft: ...} либо {fl: ...}
+#    stands: список стоянок по умолчанию (для подсказки), sid: подсказки SID по ВПП
+# =====================================================================================
+
+moscow_tl: &moscow_tl          # Московская зона: ВП 10000 ft, ЭП зависит от QNH (ops.group, AIC 08/19)
+  - {qnh_min: 1012, fl: 110}     # XR-DIV указывает порог 1013 гПа — уточните по AIP
+  - {qnh_min: 977, fl: 120}
+  - {qnh_min: 0, fl: 130}
+
+airports:
+  UUEE:
+    name: Шереметьево
+    name_gen: Шереметьево          # "разрешено до ..." (родительный падеж)
+    lat: 55.9728
+    lon: 37.4146
+    elevation_ft: 630
+    transition_altitude_ft: 10000
+    transition_levels: *moscow_tl
+    squawk_range: ["1501", "1537"]
+    initial_climb: {alt_ft: 6000}   # ПРИМЕР — смотрите вашу схему SID
+    approach_radius_km: 70
+    radar_radius_km: 40
+    runways:
+      - {id: 06R, hdg: 64, ils: 109.1}
+      - {id: 24L, hdg: 244, ils: 110.5}
+      - {id: 06C, hdg: 64, ils: 108.1}
+      - {id: 24C, hdg: 244, ils: 111.3}
+      - {id: 06L, hdg: 64, ils: 108.75}
+      - {id: 24R, hdg: 244, ils: 109.35}
+    preferred_departure: ["24C", "06C"]
+    preferred_arrival: ["24L", "06R"]
+    units:
+      delivery: {callsign: Шереметьево-Деливери, freq: 120.875}
+      ground:   {callsign: Шереметьево-Руление, freq: 121.8}
+      tower:    {callsign: Шереметьево-Старт, freq: 131.5}
+      radar:    {callsign: Шереметьево-Круг, freq: 120.675}
+      approach: {callsign: Шереметьево-Подход, freq: 122.7}
+
+  UUDD:
+    name: Домодедово
+    name_gen: Домодедово
+    lat: 55.4088
+    lon: 37.9063
+    elevation_ft: 594
+    transition_altitude_ft: 10000
+    transition_levels: *moscow_tl
+    squawk_range: ["1540", "1577"]
+    initial_climb: {alt_ft: 6000}
+    approach_radius_km: 70
+    radar_radius_km: 40
+    runways:
+      - {id: 14R, hdg: 135, ils: 110.1}
+      - {id: 32L, hdg: 315, ils: 109.3}
+      - {id: "14", hdg: 135, ils: 108.5}
+      - {id: "32", hdg: 315, ils: 111.9}
+    preferred_departure: ["32L", "14R"]
+    preferred_arrival: ["32", "14"]
+    units:
+      delivery: {callsign: Домодедово-Деливери, freq: 129.15}
+      ground:   {callsign: Домодедово-Перрон, freq: 119.0}
+      tower:    {callsign: Домодедово-Вышка, freq: 118.6}
+      radar:    {callsign: Домодедово-Круг, freq: 127.7}
+
+  UUWW:
+    name: Внуково
+    name_gen: Внуково
+    lat: 55.5915
+    lon: 37.2615
+    elevation_ft: 686
+    transition_altitude_ft: 10000
+    transition_levels: *moscow_tl
+    squawk_range: ["2101", "2117"]
+    initial_climb: {alt_ft: 6000}
+    approach_radius_km: 70
+    radar_radius_km: 40
+    runways:
+      - {id: "01", hdg: 13, ils: 111.7}
+      - {id: "19", hdg: 193, ils: 111.5}
+      - {id: "06", hdg: 58, ils: 108.9}
+      - {id: "24", hdg: 238, ils: 111.1}
+    preferred_departure: ["24", "06"]
+    preferred_arrival: ["24", "06"]
+    units:
+      delivery: {callsign: Внуково-Деливери, freq: 131.8}
+      ground:   {callsign: Внуково-Руление, freq: 121.7}
+      tower:    {callsign: Внуково-Старт, freq: 118.3}
+      radar:    {callsign: Внуково-Круг, freq: 123.4}
+
+  ULLI:
+    name: Пулково
+    name_gen: Пулково
+    lat: 59.8003
+    lon: 30.2625
+    elevation_ft: 79
+    # По XR-DIV: ВП 3500 ft, ЭП FL050 при QNH>=996, FL060 при QNH>=960 — ПРОВЕРЬТЕ по AIP!
+    transition_altitude_ft: 3500
+    transition_levels:
+      - {qnh_min: 996, fl: 50}
+      - {qnh_min: 960, fl: 60}
+      - {qnh_min: 0, fl: 70}
+    squawk_range: ["0701", "0777"]
+    initial_climb: {alt_ft: 3000}   # ПРИМЕР
+    approach_radius_km: 80
+    radar_radius_km: 40
+    runways:
+      - {id: 10L, hdg: 95, ils: 110.5}
+      - {id: 28R, hdg: 275, ils: 111.3}
+      - {id: 10R, hdg: 95, ils: 111.9}
+      - {id: 28L, hdg: 275, ils: 108.9}
+    preferred_departure: ["28L", "10R"]
+    preferred_arrival: ["28R", "10L"]
+    units:
+      delivery: {callsign: Пулково-Деливери, freq: 121.9}
+      ground:   {callsign: Пулково-Руление, freq: 121.7}
+      tower:    {callsign: Пулково-Вышка, freq: 118.1}
+      radar:    {callsign: Пулково-Круг, freq: 120.3}
+      approach: {callsign: Петербург-Подход, freq: 119.3}
+
+  # ---- Региональные аэродромы: только координаты/ВПП (приблизительно). Частоты не заданы —
+  # ---- впишите сами из AIP; без них программа обслуживает вас силами РЦ (Москва-Контроль).
+  UUBW:
+    name: Жуковский
+    name_gen: Жуковского
+    lat: 55.5533
+    lon: 38.1500
+    elevation_ft: 377
+    transition_altitude_ft: 10000
+    transition_levels: *moscow_tl
+    squawk_range: ["2201", "2217"]   # ПРИМЕР
+    initial_climb: {alt_ft: 6000}
+    runways:
+      - {id: "12", hdg: 113}
+      - {id: "30", hdg: 293}
+    units: {}
+  UUOO:
+    name: Воронеж
+    name_gen: Воронежа
+    lat: 51.8142
+    lon: 39.2296
+    elevation_ft: 514
+    transition_altitude_ft: 10000    # ПРОВЕРЬТЕ
+    transition_levels: *moscow_tl
+    squawk_range: ["2301", "2317"]   # ПРИМЕР
+    initial_climb: {alt_ft: 5000}
+    runways:
+      - {id: "05", hdg: 45}
+      - {id: "23", hdg: 225}
+    units: {}
+  UWGG:
+    name: Нижний Новгород (Стригино)
+    name_gen: Нижнего Новгорода
+    lat: 56.2301
+    lon: 43.7840
+    elevation_ft: 256
+    transition_altitude_ft: 10000    # ПРОВЕРЬТЕ
+    transition_levels: *moscow_tl
+    squawk_range: ["2401", "2417"]   # ПРИМЕР
+    initial_climb: {alt_ft: 5000}
+    runways:
+      - {id: "18", hdg: 172}
+      - {id: "36", hdg: 352}
+    units: {}
+  UUBP:
+    name: Брянск
+    name_gen: Брянска
+    lat: 53.2142
+    lon: 34.1764
+    elevation_ft: 663
+    transition_altitude_ft: 10000    # ПРОВЕРЬТЕ
+    transition_levels: *moscow_tl
+    squawk_range: ["2501", "2517"]   # ПРИМЕР
+    initial_climb: {alt_ft: 5000}
+    runways:
+      - {id: "18", hdg: 177}
+      - {id: "36", hdg: 357}
+    units: {}

@@ -1,0 +1,8 @@
+[project]
+name = "xplane-ru-atc"
+version = "0.1.0"
+description = "Русскоязычный голосовой диспетчер (ATC) для X-Plane 12 / Zibo 737"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
