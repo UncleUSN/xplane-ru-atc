@@ -516,19 +516,34 @@ class Controller:
         unit = p.unit
         if not wrong and not missing:
             return self._accept_pending(p, s, valued=True)
-        # lenient: «подтверждаю» / «понял» / «роджер» без значений закрывает указание.
-        # Неверное значение сюда не попадает — его по-прежнему поправляем.
-        if not wrong and self._lenient_readback() and self._bare_ack(msg, unit):
+        # Голое подтверждение, даже если рядом позывной, «приём» или кривое имя органа
+        # («шереметев делились … подтверждаю приём»). Неверное значение сюда не попадает.
+        if not wrong and self._lenient_readback() and (msg.intent == "wilco" or self._bare_ack(msg, unit)):
             log.debug("readback закрыт подтверждением: %r", msg.norm)
-            return self._accept_pending(p, s, valued=False)
+            return self._accept_pending(p, s, valued=True)
         p.attempts += 1
         if p.attempts > 2:
-            self.pending = None
+            # Дважды попросили повторить — третий раз ту же фразу не крутим.
+            log.debug("readback закрыт после повторных запросов: %r", msg.norm)
+            return self._readback_ourselves(p, s)
         bad = wrong + missing
         word = "неправильно" if wrong else "подтвердите"
         items = ", ".join(self._item_tag(k, p.items[k]) for k in bad)
         tx = self.tx(unit, f"{{cs}}, {word}, {items}", s)
         return tx
+
+    def _readback_ourselves(self, p: PendingReadback, s: SimState) -> Optional[Transmission]:
+        """Сами называем значения и идём дальше (передача следующему органу)."""
+        unit = p.unit
+        after, after_unit = p.after, p.after_unit
+        items = ", ".join(self._item_tag(k, v) for k, v in p.items.items())
+        self.pending = None
+        parts = [x for x in (items, after) if x]
+        if after_unit:
+            self.handoff_to = after_unit
+        if not parts:
+            return None
+        return self.tx(unit, "{cs}, " + ", ".join(parts), s)
 
     def _item_tag(self, k: str, v) -> str:
         return {"level": f"{{fl:{v}}}", "alt_ft": f"{{alt:{v}}}", "squawk": f"ответчик {{sq:{v}}}",

@@ -59,8 +59,7 @@ def test_bare_confirmation_accepts_clearance(cfg, airspace, phrase):
     assert ctl.pending is None
     assert ctl.handoff_to is not None and ctl.handoff_to.callsign == "Шереметьево-Руление"
     shown = tx(ev)
-    assert shown and "Руление" in shown[0].display
-    assert "правильно" not in shown[0].display
+    assert shown and "Руление" in shown[0].display and "правильно" in shown[0].display
 
 
 def test_confirmation_with_wrong_value_is_still_corrected(cfg, airspace):
@@ -99,8 +98,8 @@ def test_wrong_runway_and_level_and_frequency(cfg, airspace):
     r = tx(ctl.on_pilot("частота 132.6", s))[0]
     assert "неправильно" in r.display and "121.8" in r.display
     ctl.pending = PendingReadback(items={"level": 150}, t=s.t, unit=unit, seq=9)
-    assert tx(ctl.on_pilot("так точно", s)) == []
-    assert ctl.pending is None
+    ok = tx(ctl.on_pilot("так точно", s))
+    assert ctl.pending is None and ok and "правильно" in ok[0].display
 
 
 def test_garbage_does_not_confirm(cfg, airspace):
@@ -109,6 +108,69 @@ def test_garbage_does_not_confirm(cfg, airspace):
     ctl.on_pilot("прошу разрешение до Пулково", s)
     r = tx(ctl.on_pilot("абракадабра", s))[0]
     assert "подтвердите" in r.display and ctl.pending is not None
+
+
+# Фразы из реального эфира: Vosk услышал «делились»/«шереметев» и «пятьсот первый».
+_LOG_REQUEST = "шереметьево делились сибирь сибирь пятьсот один прошу разрешения вылет пулково"
+_LOG_WILCO = "шереметев деливери сибирь пятьсот первый подтверждаю приём"
+_LOG_WILCO_SHORT = "сибирь пятьсот первый подтверждаю"
+
+
+def _siberia(cfg, airspace, **atc):
+    cfg["callsign"]["spoken"] = "Сибирь"
+    cfg["callsign"]["number"] = "501"
+    return make_ctl(cfg, airspace, **atc)
+
+
+@pytest.mark.parametrize("phrase", [_LOG_WILCO, _LOG_WILCO_SHORT, "подтверждаю приём"])
+def test_ifr_clearance_bare_wilco_from_sim_log(cfg, airspace, phrase):
+    ctl = _siberia(cfg, airspace)
+    s = sim(ctl)
+    issued = tx(ctl.on_pilot(_LOG_REQUEST, s))[0]
+    assert "разрешено до Пулково" in issued.display and "6000" in issued.display
+    assert ctl.squawk and ctl.pending is not None
+    reply = tx(ctl.on_pilot(phrase, s))[0]
+    assert reply.display.startswith("Сибирь 501")
+    assert "правильно" in reply.display and "подтвердите" not in reply.display
+    assert "Руление" in reply.display
+    assert ctl.pending is None
+    assert ctl.handoff_to is not None and ctl.handoff_to.type == "ground"
+
+
+def test_ifr_clearance_wilco_when_config_has_no_strictness_key(cfg, airspace):
+    # Старый config.yaml без readback_strictness — по умолчанию мягкий режим.
+    del cfg["atc"]["readback_strictness"]
+    ctl = _siberia(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot(_LOG_REQUEST, s)
+    reply = tx(ctl.on_pilot(_LOG_WILCO, s))[0]
+    assert "правильно" in reply.display and "подтвердите" not in reply.display
+    assert ctl.pending is None and ctl.handoff_to.type == "ground"
+
+
+def test_clearance_wilco_with_wrong_squawk_still_corrected(cfg, airspace):
+    ctl = _siberia(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot(_LOG_REQUEST, s)
+    r = tx(ctl.on_pilot("подтверждаю приём, ответчик 7777", s))[0]
+    assert "неправильно" in r.display and ctl.squawk in r.display
+    assert ctl.pending is not None
+
+
+def test_readback_prompt_stops_after_two_tries(cfg, airspace):
+    ctl = _siberia(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot(_LOG_REQUEST, s)
+    sq = ctl.squawk
+    for _ in range(2):
+        r = tx(ctl.on_pilot("абракадабра", s))[0]
+        assert "подтвердите" in r.display and sq in r.display
+        assert ctl.pending is not None
+    final = tx(ctl.on_pilot("абракадабра", s))[0]
+    assert ctl.pending is None
+    assert "подтвердите" not in final.display and "неправильно" not in final.display
+    assert sq in final.display and "6000" in final.display
+    assert ctl.handoff_to is not None and ctl.handoff_to.type == "ground"
 
 
 def test_strict_readback_rejects_bare_confirmation(cfg, airspace):

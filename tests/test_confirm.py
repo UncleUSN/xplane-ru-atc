@@ -28,6 +28,8 @@ from ru_atc.phraseology.parser import parse
     "Аэрофлот один два три четыре, выполняю",
     "Шереметьево-Деливери, Аэрофлот 1234, так точно",
     "подтверждаю аэрофлод 1234",   # позывной с одной опечаткой
+    "подтверждаю приём",
+    "подтверждаю прием",
 ])
 def test_bare_confirmations(text):
     assert is_bare_confirmation(
@@ -52,6 +54,16 @@ def test_bare_confirmations(text):
 def test_not_a_bare_confirmation(text):
     assert not is_bare_confirmation(
         text, callsign="Аэрофлот", number="1234", extra="Шереметьево-Деливери")
+
+
+def test_logged_station_mishear_is_still_bare():
+    # Vosk: «шереметев» / «делились», позывной «пятьсот первый», «подтверждаю приём».
+    text = "шереметев деливери сибирь пятьсот первый подтверждаю приём"
+    assert is_bare_confirmation(text, callsign="Сибирь", number="501", extra="Шереметьево-Деливери")
+    assert is_bare_confirmation(
+        "шереметьево делились подтверждаю", callsign="Сибирь", number="501", extra="Шереметьево-Деливери")
+    assert is_bare_confirmation(
+        "сибирь пятьсот первый подтверждаю", callsign="Сибирь", number="501", extra="Шереметьево-Деливери")
 
 
 def test_parser_marks_wilco_and_keeps_values_as_readback():
