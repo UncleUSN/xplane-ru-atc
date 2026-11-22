@@ -1,5 +1,6 @@
 """Окно tkinter: фаза, частоты, разрешения, план FMC, последние передачи, ввод текстом, кнопка тангенты.
-Режимы: полный и компактная полупрозрачная панель поверх X-Plane (см. ru_atc/window.py)."""
+Режимы: полный и компактная полупрозрачная панель поверх X-Plane (см. ru_atc/window.py).
+В полном окне — портрет текущего диспетчера, в компактном — последние 5 реплик обеих сторон."""
 from __future__ import annotations
 
 import queue
@@ -7,7 +8,10 @@ import sys
 import tkinter as tk
 from tkinter import scrolledtext
 
+from .avatars import avatar_file
 from .phases import PHASE_RU, Phase
+from .radio_log import RadioHistory
+from .voice.voices import controller_gender
 from .window import WindowController, register_hotkeys
 
 
@@ -32,6 +36,32 @@ def run_tk(app):
     for i, (lbl, key) in enumerate(rows):
         tk.Label(top, text=lbl + ":", fg="#9cdcfe", bg=bg, font=font, anchor="w").grid(row=i % 6, column=(i // 6) * 2, sticky="w", padx=4)
         tk.Label(top, textvariable=vars_[key], fg=fg, bg=bg, font=font, anchor="w", width=36).grid(row=i % 6, column=(i // 6) * 2 + 1, sticky="w")
+
+    # Портрет диспетчера, который сейчас говорит (пол — по голосу TTS этого органа).
+    avatar_lbl = tk.Label(top, bg=bg)
+    avatar_lbl.grid(row=0, column=4, rowspan=6, sticky="ne", padx=(12, 4))
+    _avatar_img = {}
+
+    def show_avatar(unit_type: str) -> None:
+        if not unit_type:
+            return
+        gender = controller_gender(app.cfg.get("voice") or {}, unit_type)
+        if gender not in _avatar_img:
+            photo = None
+            path = avatar_file(gender)
+            if path is not None:
+                try:
+                    photo = tk.PhotoImage(file=str(path))
+                    while photo.width() > 128:
+                        photo = photo.subsample(2, 2)
+                except tk.TclError:
+                    photo = None
+            _avatar_img[gender] = photo
+        photo = _avatar_img.get(gender)
+        if photo is None:
+            return
+        avatar_lbl.configure(image=photo)
+        avatar_lbl.image = photo
 
     plan_var = tk.StringVar(value="План: нет (config.yaml)")
     tk.Label(full, textvariable=plan_var, fg="#c586c0", bg=bg, font=font, anchor="w", justify="left",
@@ -70,7 +100,6 @@ def run_tk(app):
     c_head = tk.Frame(compact, bg="#101010")
     c_head.pack(fill="x")
     c_state = tk.StringVar(value="-")
-    c_last = tk.StringVar(value="")
     c_plan = tk.StringVar(value="")
     c_state_lbl = tk.Label(c_head, textvariable=c_state, fg="#9cdcfe", bg="#101010", font=small, anchor="w")
     c_state_lbl.pack(side="left", fill="x", expand=True, padx=4)
@@ -78,9 +107,27 @@ def run_tk(app):
     c_ptt.pack(side="left")
     tk.Button(c_head, text="⤢", font=small, bd=0, bg="#101010", fg=fg, command=lambda: win.set_compact(False)).pack(side="left", padx=2)
     tk.Button(c_head, text="—", font=small, bd=0, bg="#101010", fg=fg, command=lambda: win.hide()).pack(side="left", padx=2)
-    c_last_lbl = tk.Label(compact, textvariable=c_last, fg="#4ec9b0", bg="#101010", font=font, anchor="nw",
-                          justify="left", wraplength=540)
-    c_last_lbl.pack(fill="both", expand=True, padx=4)
+    # Последние 5 реплик обеих сторон: старые сверху, новые снизу. Длинные строки обрезаны.
+    history = RadioHistory(limit=5, max_len=70)
+    c_log = tk.Frame(compact, bg="#101010")
+    c_log.pack(fill="x", padx=4, pady=(0, 2))
+    c_line_vars = []
+    c_line_lbls = []
+    for _ in range(history.limit):
+        var = tk.StringVar(value="")
+        lbl = tk.Label(c_log, textvariable=var, fg="#4ec9b0", bg="#101010", font=small, anchor="w", justify="left")
+        lbl.pack(fill="x")
+        c_line_vars.append(var)
+        c_line_lbls.append(lbl)
+
+    def refresh_compact():
+        for var, lbl, (role, text) in zip(c_line_vars, c_line_lbls, history.display_slots()):
+            var.set(text)
+            if role == "pilot":
+                lbl.configure(fg="#dcdcaa")
+            elif role == "atc":
+                lbl.configure(fg="#4ec9b0")
+
     tk.Label(compact, textvariable=c_plan, fg="#c586c0", bg="#101010", font=small, anchor="w").pack(fill="x", padx=4)
 
     # перетаскивание безрамочной панели мышью
@@ -91,7 +138,7 @@ def run_tk(app):
 
     def do_drag(e):
         root.geometry(f"+{e.x_root - drag['x']}+{e.y_root - drag['y']}")
-    for w in (compact, c_head, c_state_lbl, c_last_lbl):
+    for w in (compact, c_head, c_state_lbl, c_log, *c_line_lbls):
         w.bind("<ButtonPress-1>", start_drag)
         w.bind("<B1-Motion>", do_drag)
     compact.bind("<Double-Button-1>", lambda e: win.set_compact(False))
@@ -118,13 +165,15 @@ def run_tk(app):
                 kind, p = app.ui_q.get_nowait()
                 if kind == "atc":
                     add(f"▶ [{p.unit.callsign} {p.unit.freq:.3f}] {p.display}", "atc")
-                    c_last.set(f"{p.unit.callsign}: {p.display}")
+                    history.add_atc(p.unit.callsign, p.display)
+                    refresh_compact()
+                    show_avatar(p.unit.type)
                 elif kind == "pilot":
                     add(f"◀ ПИЛОТ: {p.text}   [{p.intent}]", "pilot")
+                    history.add_pilot(p.text)
+                    refresh_compact()
                 elif kind == "hint":
                     add(f"· {p.text}" if p.key == "phase" else f"⚠ {p.text}", "info" if p.key == "phase" else "hint")
-                    if p.key != "phase":
-                        c_last.set(f"⚠ {p.text}")
                 elif kind == "info":
                     add(f"ℹ {p}", "info")
                 elif kind == "hint_text":
@@ -151,6 +200,7 @@ def run_tk(app):
                     c_state.set(f"{st['phase']} | {st['controlling']} | {st['cleared']} | SQ {st['squawk']}"
                                 + ("" if s.connected else " | нет связи с X-Plane"))
                     c_plan.set("План: " + st.get("plan", "-"))
+                    show_avatar(st.get("ctrl_type") or "")
         except queue.Empty:
             pass
         root.after(200, poll)

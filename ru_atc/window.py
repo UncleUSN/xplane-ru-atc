@@ -79,7 +79,7 @@ class WindowController:
         self.compact = False
         self.hidden = False
         self.full_geometry = str(self.cfg.get("full_geometry") or "1100x680")
-        self.compact_geometry = str(self.cfg.get("compact_geometry") or "560x150-20+40")
+        self.compact_geometry = str(self.cfg.get("compact_geometry") or "560x180-20+40")
         self.focus_on_show = bool(self.cfg.get("focus_on_show", False))
         self.messages: List[str] = []
 

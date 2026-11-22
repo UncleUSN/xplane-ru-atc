@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .confirm import acknowledgement_span
 from .numbers import words_to_digits
 
 
@@ -40,7 +41,6 @@ INTENT_PATTERNS: List[tuple] = [
     ("going_around", [r"ухожу на второй", r"на второй круг"]),
     ("report_level", [r"занял\w*", r"сохраняю", r"на эшелоне", r"иду на эшелоне", r"следую на эшелоне"]),
     ("check_in", [r"на связи", r"добрый (?:день|вечер)", r"доброе утро", r"здравствуйте", r"приветствую"]),
-    ("wilco", [r"\bвыполняю\b", r"\bпонял\b", r"\bвас понял\b", r"\bпринял\b"]),
     ("say_again", [r"повторите", r"не понял"]),
 ]
 
@@ -175,6 +175,13 @@ def parse(text: str) -> ParsedMessage:
         msg.intents.remove("request_lineup")
     msg.intent = msg.intents[0] if msg.intents else "unknown"
     msg.slots = extract_slots(norm)
+    # «подтверждаю» / «понял» / «роджер», в том числе с опечаткой распознавателя.
+    # «не понял» сюда не попадает: отрицание отсекается, остаётся say_again.
+    if acknowledgement_span(norm.split()):
+        if "wilco" not in msg.intents:
+            msg.intents.append("wilco")
+        if msg.intent == "unknown":
+            msg.intent = "wilco"
     # Короткое подтверждение с параметрами -> считаем readback
     if msg.intent in ("wilco", "unknown") and msg.slots:
         msg.intent = "readback"
