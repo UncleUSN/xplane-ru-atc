@@ -22,7 +22,8 @@ DEFAULTS: Dict[str, Any] = {
     "sim": {"source": "webapi", "host": "localhost", "webapi_port": 8086, "webapi_version": "auto",
             "udp_port": 49000, "udp_listen_port": 49010, "use_zibo_datarefs": True,
             "mock_time_scale": 4.0},
-    "atc": {"strict_frequency": True, "confirm_correct_readback": True, "readback_timeout_s": 20,
+    "atc": {"strict_frequency": True, "confirm_correct_readback": True,
+            "readback_strictness": "lenient", "readback_timeout_s": 20,
             "levels_digit_by_digit": False, "auto_descent": True, "speed_limit_kt": 250,
             "voice_warnings": True},
     "voice": {"enabled": True, "ptt_key": "caps lock", "ptt_joystick": None, "input_device": None,
@@ -37,7 +38,7 @@ DEFAULTS: Dict[str, Any] = {
            "start_compact": False,          # сразу компактная полупрозрачная панель
            "compact_alpha": 0.85,           # прозрачность компактного режима (0.2..1.0)
            "full_alpha": 1.0,
-           "compact_geometry": "560x150-20+40",   # ШxВ±X±Y; "-20+40" = 20 px от правого края, 40 от верха
+           "compact_geometry": "560x180-20+40",   # ШxВ±X±Y; "-20+40" = 20 px от правого края, 40 от верха
            "full_geometry": "1100x680",
            "compact_borderless": True,      # компактная панель без рамки (перетаскивается мышью)
            "hotkey_toggle": "ctrl+shift+a", # показать/спрятать окно (глобально); "" = выкл.

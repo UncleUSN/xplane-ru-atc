@@ -100,7 +100,7 @@ def test_compact_mode_restores_full_geometry():
     w.apply_initial()
     r.geom = "1100x680+100+50"             # пользователь подвинул окно
     w.toggle_compact()
-    assert w.compact and modes == [True] and r.borderless and r.geom == "560x150-20+40"
+    assert w.compact and modes == [True] and r.borderless and r.geom == "560x180-20+40"
     assert r.attrs["-alpha"] == 0.7 and r.attrs["-topmost"] is True
     w.toggle_compact()
     assert not w.compact and not r.borderless and r.geom == "1100x680+100+50" and r.attrs["-alpha"] == 1.0
@@ -110,7 +110,7 @@ def test_start_compact():
     r = FakeRoot()
     w = WindowController(r, ui(start_compact=True), win32=FakeWin32(False))
     w.apply_initial()
-    assert w.compact and r.geom == "560x150-20+40"
+    assert w.compact and r.geom == "560x180-20+40"
 
 
 def test_toggle_visible_returns_focus_to_sim():

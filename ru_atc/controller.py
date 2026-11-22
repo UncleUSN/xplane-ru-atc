@@ -11,6 +11,7 @@ from .airspace import Airport, Airspace, Runway, Unit, angle_diff, haversine_km
 from .events import Hint, PilotMessage, Transmission
 from .model import SimState
 from .phases import Phase, PhaseTracker
+from .phraseology.confirm import is_bare_confirmation
 from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
 from .flightplan.model import FlightPlan
@@ -435,6 +436,10 @@ class Controller:
             if res is not None:
                 out.append(res)
                 return out
+            # Голое «понял» закрыло указание без ответной реплики — не проваливаться в «повторите».
+            # Верный readback частоты по-прежнему пропускается дальше (доклад на связи в той же фразе).
+            if self.pending is None and msg.intent == "wilco":
+                return out
         # 2) направить к нужному органу
         if needed and self.strict_freq and not self.same_unit(unit, needed) and unit.type != needed.type:
             out.append(self.tx(unit, f"{{cs}}, {unit.callsign}, {self.handoff_template(needed)}", s))
@@ -449,6 +454,31 @@ class Controller:
         return out
 
     # ------------------------------------------------------------------ readback
+    def _lenient_readback(self) -> bool:
+        mode = str(self.cfg["atc"].get("readback_strictness", "lenient")).strip().lower()
+        return mode != "strict"
+
+    def _bare_ack(self, msg: ParsedMessage, unit: Unit) -> bool:
+        return is_bare_confirmation(
+            msg.norm, callsign=self.r.cs_spoken, number=self.r.cs_number,
+            extra=unit.callsign if unit else "")
+
+    def _accept_pending(self, p: PendingReadback, s: SimState, *, valued: bool) -> Optional[Transmission]:
+        unit = p.unit
+        after, after_unit = p.after, p.after_unit
+        only_freq = set(p.items) == {"freq"}
+        self.pending = None
+        parts = []
+        if valued and self.cfg["atc"].get("confirm_correct_readback", True) and not only_freq:
+            parts.append("правильно")
+        if after:
+            parts.append(after)
+        if after_unit:
+            self.handoff_to = after_unit
+        if not parts:
+            return None
+        return self.tx(unit, "{cs}, " + ", ".join(parts), s)
+
     def _check_readback(self, msg: ParsedMessage, s: SimState) -> Optional[Transmission]:
         p = self.pending
         sl = msg.slots
@@ -485,19 +515,12 @@ class Controller:
                 wrong.append(k)
         unit = p.unit
         if not wrong and not missing:
-            after, after_unit = p.after, p.after_unit
-            self.pending = None
-            parts = []
-            only_freq = set(p.items) == {"freq"}
-            if self.cfg["atc"].get("confirm_correct_readback", True) and not only_freq:
-                parts.append("правильно")
-            if after:
-                parts.append(after)
-            if after_unit:
-                self.handoff_to = after_unit
-            if not parts:
-                return None
-            return self.tx(unit, "{cs}, " + ", ".join(parts), s)
+            return self._accept_pending(p, s, valued=True)
+        # lenient: «подтверждаю» / «понял» / «роджер» без значений закрывает указание.
+        # Неверное значение сюда не попадает — его по-прежнему поправляем.
+        if not wrong and self._lenient_readback() and self._bare_ack(msg, unit):
+            log.debug("readback закрыт подтверждением: %r", msg.norm)
+            return self._accept_pending(p, s, valued=False)
         p.attempts += 1
         if p.attempts > 2:
             self.pending = None
@@ -1027,4 +1050,5 @@ class Controller:
             "pending": ", ".join(f"{k}={v}" for k, v in self.pending.items.items()) if self.pending else "-",
             "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
             "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
+            "ctrl_type": self.controlling.type if self.controlling else "",
         }

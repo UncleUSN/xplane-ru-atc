@@ -1,3 +1,5 @@
+import pytest
+
 from ru_atc.events import Hint, Transmission
 from ru_atc.model import SimState
 
@@ -34,6 +36,92 @@ def test_clearance_and_correct_readback(cfg, airspace):
     assert "правильно" in r.display and "Шереметьево-Руление" in r.display
     assert ctl.pending is None
     assert ctl.handoff_to.callsign == "Шереметьево-Руление"
+
+
+@pytest.mark.parametrize("phrase", [
+    "подтверждаю",
+    "подтвреждаю",
+    "понял",
+    "принял",
+    "выполняю",
+    "вас понял",
+    "так точно",
+    "роджер",
+    "уилко",
+    "Аэрофлот 1234, понял",
+    "Шереметьево-Деливери, Аэрофлот один два три четыре, подтверждаю",
+])
+def test_bare_confirmation_accepts_clearance(cfg, airspace, phrase):
+    ctl = make_ctl(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot("прошу разрешение до Пулково", s)
+    ev = ctl.on_pilot(phrase, s)
+    assert ctl.pending is None
+    assert ctl.handoff_to is not None and ctl.handoff_to.callsign == "Шереметьево-Руление"
+    shown = tx(ev)
+    assert shown and "Руление" in shown[0].display
+    assert "правильно" not in shown[0].display
+
+
+def test_confirmation_with_wrong_value_is_still_corrected(cfg, airspace):
+    ctl = make_ctl(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot("прошу разрешение до Пулково", s)
+    r = tx(ctl.on_pilot("подтверждаю, ответчик 7777", s))[0]
+    assert "неправильно" in r.display and ctl.squawk in r.display
+    assert ctl.pending is not None
+    # голое подтверждение после поправки диспетчера указание закрывает
+    ev = ctl.on_pilot("понял", s)
+    assert ctl.pending is None
+    assert any("Руление" in t.display for t in tx(ev))
+
+
+def test_wrong_runway_and_level_and_frequency(cfg, airspace):
+    from ru_atc.controller import PendingReadback
+
+    ctl = make_ctl(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot("прошу разрешение до Пулково", s)
+    ctl.on_pilot("подтверждаю", s)
+    s = sim(ctl, unit_type="ground")
+    ctl.on_pilot("разрешите буксировку и запуск", s)
+    tx(ctl.on_pilot("разрешите руление", s))
+    bad = tx(ctl.on_pilot("ВПП 06 левая", s))[0]
+    assert "неправильно" in bad.display and ctl.pending is not None
+
+    unit = ctl.dep.unit("delivery")
+    s = sim(ctl)
+    ctl.controlling = unit
+    ctl.pending = PendingReadback(items={"level": 330}, t=s.t, unit=unit, seq=7)
+    r = tx(ctl.on_pilot("эшелон 240", s))[0]
+    assert "неправильно" in r.display and "330" in r.display
+    ctl.pending = PendingReadback(items={"freq": 121.8}, t=s.t, unit=unit, seq=8)
+    r = tx(ctl.on_pilot("частота 132.6", s))[0]
+    assert "неправильно" in r.display and "121.8" in r.display
+    ctl.pending = PendingReadback(items={"level": 150}, t=s.t, unit=unit, seq=9)
+    assert tx(ctl.on_pilot("так точно", s)) == []
+    assert ctl.pending is None
+
+
+def test_garbage_does_not_confirm(cfg, airspace):
+    ctl = make_ctl(cfg, airspace)
+    s = sim(ctl)
+    ctl.on_pilot("прошу разрешение до Пулково", s)
+    r = tx(ctl.on_pilot("абракадабра", s))[0]
+    assert "подтвердите" in r.display and ctl.pending is not None
+
+
+def test_strict_readback_rejects_bare_confirmation(cfg, airspace):
+    ctl = make_ctl(cfg, airspace, readback_strictness="strict")
+    s = sim(ctl)
+    ctl.on_pilot("прошу разрешение до Пулково", s)
+    r = tx(ctl.on_pilot("подтверждаю", s))[0]
+    assert "подтвердите" in r.display and ctl.pending is not None
+    # в строгом режиме по-прежнему принимается полное повторение
+    words_sq = " ".join({"0": "ноль", "1": "один", "2": "два", "3": "три", "4": "четыре",
+                         "5": "пять", "6": "шесть", "7": "семь"}[c] for c in ctl.squawk)
+    r = tx(ctl.on_pilot(f"6000 футов, ответчик {words_sq}", s))[0]
+    assert "правильно" in r.display and ctl.pending is None
 
 
 def test_wrong_readback(cfg, airspace):

@@ -6,6 +6,8 @@ import queue
 import threading
 from typing import Callable, Optional
 
+from .voices import speaking_voice
+
 log = logging.getLogger(__name__)
 
 
@@ -137,7 +139,8 @@ class Speaker:
         if isinstance(self.tts, Pyttsx3TTS):
             self.tts.speak_direct(text)
             return
-        voice = (self.cfg.get("unit_voices") or {}).get(unit_type) if self.tts.name == "silero" else None
+        # Тот же выбор, что и у портрета в окне: unit_voices, иначе silero_speaker.
+        voice = speaking_voice(self.cfg, unit_type, "silero") if self.tts.name == "silero" else None
         audio = self.tts.synth(text, voice)
         if audio is None:
             return
