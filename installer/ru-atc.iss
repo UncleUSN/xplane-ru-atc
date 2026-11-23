@@ -2,7 +2,12 @@
 ; Собирать скриптом installer\build.ps1: он подставляет /DMyAppVersion из ru_atc\__init__.py
 ; и перед компиляцией генерирует installer\generated\ (радиокнопки и config.yaml).
 ; Нужен Inno Setup 6.3 или новее (CreateDownloadPage, x64compatible).
-; Готовый setup.exe в среде подготовки этого выпуска не собирался: там нет Windows.
+;
+; Относительные пути ниже считаются от ЭТОГО файла (каталог installer\), не от корня
+; репозитория и не от текущей папки. Один «..» — это корень:
+;   OutputDir  -> <корень>\dist\installer\RU-ATC-<версия>-setup.exe
+;   Source     -> <корень>\dist\RU-ATC\*
+; Лишний «..» увёл бы вывод на каталог выше репозитория.
 
 #ifndef MyAppVersion
   #error Запустите installer\build.ps1 — он передаёт /DMyAppVersion из ru_atc\__init__.py
@@ -169,7 +174,7 @@ end;
 
 function SelectedConfigFile: String;
 begin
-  Result := 'config-' + VoskIds[SelectedVosk] + '-' + SpeakerIds[SelectedSpeaker] + '.yaml';
+  Result := 'config-' + VoskId(SelectedVosk) + '-' + SpeakerId(SelectedSpeaker) + '.yaml';
 end;
 
 procedure InitializeWizard;
@@ -223,12 +228,12 @@ begin
   SetArrayLength(VoskItemIndex, VoskCount);
   ModelList.AddGroup('Распознавание речи — модель Vosk', '', 0, nil);
   for I := 0 to VoskCount - 1 do
-    VoskItemIndex[I] := ModelList.AddRadioButton(VoskCaptions[I], '', 0, I = VoskDefault, True, nil);
+    VoskItemIndex[I] := ModelList.AddRadioButton(VoskCaption(I), '', 0, I = VoskDefault, True, nil);
 
   SetArrayLength(SpeakerItemIndex, SpeakerCount);
   ModelList.AddGroup('Синтез речи — Silero v4_ru, один голос', '', 0, nil);
   for I := 0 to SpeakerCount - 1 do
-    SpeakerItemIndex[I] := ModelList.AddRadioButton(SpeakerCaptions[I], '', 0, I = SpeakerDefault, True, nil);
+    SpeakerItemIndex[I] := ModelList.AddRadioButton(SpeakerCaption(I), '', 0, I = SpeakerDefault, True, nil);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -245,14 +250,14 @@ begin
   if CurPageID <> wpReady then
     Exit;
   I := SelectedVosk;
-  ModelDir := ExpandConstant('{app}\models\' + VoskIds[I] + '\am');
+  ModelDir := ExpandConstant('{app}\models\' + VoskId(I) + '\am');
   ZipPath := ExpandConstant('{tmp}\vosk-model.zip');
   if DirExists(ModelDir) then
   begin
     Log('Модель уже лежит в ' + ModelDir);
     Exit;
   end;
-  if (DownloadedVosk = VoskIds[I]) and FileExists(ZipPath) then
+  if (DownloadedVosk = VoskId(I)) and FileExists(ZipPath) then
   begin
     Log('Архив этой модели уже скачан');
     Exit;
@@ -260,12 +265,12 @@ begin
   DeleteFile(ZipPath);
   DownloadedVosk := '';
   DownloadPage.Clear;
-  DownloadPage.Add(VoskUrls[I], 'vosk-model.zip', '');
+  DownloadPage.Add(VoskUrl(I), 'vosk-model.zip', '');
   DownloadPage.Show;
   try
     try
       DownloadPage.Download;
-      DownloadedVosk := VoskIds[I];
+      DownloadedVosk := VoskId(I);
     except
       DeleteFile(ZipPath);
       SuppressibleMsgBox(
@@ -289,7 +294,7 @@ begin
   if not FileExists(ExpandConstant('{app}\config.yaml')) then
   begin
     ExtractTemporaryFile(CfgName);
-    if not FileCopy(ExpandConstant('{tmp}\') + CfgName, ExpandConstant('{app}\config.yaml'), False) then
+    if not CopyFile(ExpandConstant('{tmp}\') + CfgName, ExpandConstant('{app}\config.yaml'), False) then
       MsgBox('Не удалось записать config.yaml. Скопируйте config.example.yaml и поправьте модель и голос вручную.', mbError, MB_OK);
   end
   else

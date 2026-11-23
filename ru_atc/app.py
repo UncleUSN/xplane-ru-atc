@@ -249,6 +249,118 @@ class App:
             nav.close()
 
 
+def smoke_check() -> int:
+    """Импорт тяжёлых библиотек собранного exe. Код 0 — всё открылось.
+
+    Окно у сборки без консоли, stdout может быть None, поэтому отчёт ещё
+    пишется в RU_ATC_SMOKE_REPORT (его задаёт installer/build.ps1) после
+    каждого шага: если импорт зависнет, в файле останется имя модуля.
+
+    ``import sounddevice`` сразу вызывает ``Pa_Initialize()`` и на машине без
+    звуковой карты (бегун GitHub) зависает на перечислении устройств. Здесь
+    DLL только загружается: ``Pa_GetVersion`` инициализации не требует.
+    """
+    import ctypes
+    import os
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+    lines: List[str] = []
+    rc = 0
+    report = os.environ.get("RU_ATC_SMOKE_REPORT")
+
+    def flush() -> None:
+        if not report:
+            return
+        dest = Path(report)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def ok(text: str) -> None:
+        lines.append(f"ок {text}")
+        flush()
+
+    def fail(text: str) -> None:
+        nonlocal rc
+        rc = 1
+        lines.append(f"ошибка {text}")
+        flush()
+
+    def step(name: str):
+        lines.append(f"… {name}")
+        flush()
+        try:
+            __import__(name)
+        except Exception as exc:
+            fail(f"{name}: {type(exc).__name__}: {exc}")
+        else:
+            lines.pop()
+            ok(name)
+
+    for name in (
+        "yaml",
+        "numpy",
+        "_sounddevice",
+        "_sounddevice_data",
+        "vosk",
+        "torch",
+        "omegaconf",
+        "scipy.signal",
+        "keyboard",
+        "pygame",
+        "pyttsx3",
+        "tkinter",
+    ):
+        step(name)
+    try:
+        lines.append("… portaudio dll")
+        flush()
+        import _sounddevice_data
+        dll_path = Path(next(iter(_sounddevice_data.__path__))) / "portaudio-binaries" / "libportaudio64bit.dll"
+        if not dll_path.is_file():
+            fail(f"нет {dll_path}")
+        else:
+            lib = ctypes.CDLL(str(dll_path))
+            lib.Pa_GetVersion.restype = ctypes.c_int
+            lines.pop()
+            ok(f"portaudio {dll_path.name} Pa_GetVersion={int(lib.Pa_GetVersion())}")
+    except Exception as exc:
+        fail(f"portaudio: {type(exc).__name__}: {exc}")
+    try:
+        from .avatars import avatar_file
+        for gender in ("female", "male"):
+            path = avatar_file(gender)
+            if path is None:
+                fail(f"портрет {gender}")
+            else:
+                ok(f"портрет {path.name}")
+    except Exception as exc:
+        fail(f"портрет: {type(exc).__name__}: {exc}")
+    if getattr(sys, "frozen", False):
+        from .config import app_root
+        root = app_root()
+        expected = Path(sys.executable).resolve().parent
+        if root != expected:
+            fail(f"app_root {root} (ожидался каталог exe {expected})")
+        else:
+            ok(f"app_root {root}")
+        for rel in ("config.example.yaml", "data/airports.yaml", "data/airspace.yaml", "CHANGELOG.md"):
+            path = root / rel
+            if path.is_file():
+                ok(rel)
+            else:
+                fail(f"нет файла {path}")
+    text = "\n".join(lines) + "\n"
+    flush()
+    try:
+        sys.stdout.write(text)
+    except Exception:
+        pass
+    return rc
+
+
 def fmt_state(s, st) -> str:
     return (f"[{st['phase']}] {PHASE_RU.get(__import__('ru_atc.phases', fromlist=['Phase']).Phase(st['phase']), '')} | "
             f"COM1 {s.com1_khz / 1000:.3f} | ALT {s.alt_ind_ft:.0f} ft | IAS {s.ias_kt:.0f} | GS {s.gs_kt:.0f} | "
@@ -297,6 +409,10 @@ def run_console(app: App):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--smoke" in argv:
+        raise SystemExit(smoke_check())
     ap = argparse.ArgumentParser(description="Русскоязычный голосовой диспетчер для X-Plane 12")
     ap.add_argument("-c", "--config", help="путь к config.yaml")
     ap.add_argument("--source", choices=["webapi", "udp", "mock"], help="источник данных")
