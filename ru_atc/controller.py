@@ -573,6 +573,22 @@ class Controller:
         return out
 
     # ------------------------------------------------------------------ сообщения пилота
+    def _nofreq_text(self, s: SimState) -> str:
+        mhz = f"{s.com1_khz / 1000:.3f}"
+        if self.nav is None:
+            return (f"На частоте {mhz} никто не отвечает "
+                    f"(нет органа ОВД в data/airports.yaml / airspace.yaml)")
+        ap = self.dep if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB) else self.arr
+        parts = []
+        for unit in ap.units.values():
+            extra = ""
+            if unit.aliases:
+                extra = " (также " + ", ".join(f"{alias:.3f}" for alias in unit.aliases) + ")"
+            parts.append(f"{unit.callsign} {unit.freq:.3f}{extra}")
+        listed = "; ".join(parts) if parts else "органов нет"
+        return (f"На частоте {mhz} никто не отвечает. "
+                f"Частоты взяты из навигационных данных X-Plane. {ap.icao}: {listed}")
+
     def responding_unit(self, s: SimState, needed: Optional[Unit]) -> Optional[Unit]:
         if not self.strict_freq:
             return needed or self.controlling
@@ -681,8 +697,7 @@ class Controller:
                     unit = self._atis_unit(atis_ap)
                 else:
                     self._observe_atis_report(msg, s, None)
-                    out.append(Hint(text=f"На частоте {s.com1_khz / 1000:.3f} никто не отвечает "
-                                         f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
+                    out.append(Hint(text=self._nofreq_text(s), t=s.t, key="nofreq"))
                     return out
             self._observe_atis_report(msg, s, unit)
             if msg.intent in ("emergency_mayday", "emergency_pan", "emergency_cancel") or (
@@ -692,9 +707,11 @@ class Controller:
                     out.append(res)
                 return out
             # «спасибо» не прячет посторонние слова: иначе мусор не дойдёт до readback.
+            # Лишнее слово распознавателя («север») не отменяет выход на связь,
+            # если позывной уже узнан. Без позывного «добрый день абракадабра» по-прежнему «повторите».
             if (msg.greet or msg.farewell) and msg.intent in ("farewell", "check_in") \
                     and "wilco" not in msg.intents and not msg.slots and "на связи" not in msg.norm \
-                    and not self._pure_courtesy(msg, unit):
+                    and not msg.callsign and not self._pure_courtesy(msg, unit):
                 msg.intent = "unknown"
             # 1) readback. Ключи считаем до смены органа: автонастройка COM1
             # уже могла перенести пилота на новую частоту, а повтор ещё за старым.
@@ -1389,7 +1406,7 @@ class Controller:
     def _on_freq(self, s: SimState, unit: Optional[Unit]) -> bool:
         if unit is None:
             return False
-        return (not self.strict_freq) or abs(s.com1_khz - unit.khz) <= 3
+        return (not self.strict_freq) or unit.matches_khz(s.com1_khz)
 
     def _route_points(self, s: SimState) -> Tuple[List[Tuple[float, float]], List[str]]:
         points = [(s.lat, s.lon), (self.dep.lat, self.dep.lon), (self.arr.lat, self.arr.lon)]

@@ -12,6 +12,18 @@ from .config import resolve_path
 
 EARTH_R_KM = 6371.0
 UNIT_TYPES = ("delivery", "ground", "tower", "radar", "approach", "control")
+# Каналы 8.33 кГц стоят через 8.33, каналы 25 кГц — через 25.
+# 8 кГц закрывает округление подписи канала и dataref, но не соседний канал.
+COM_MATCH_KHZ = 8
+
+
+def com_match(mhz: float, khz: int, tolerance: int = COM_MATCH_KHZ) -> bool:
+    """Совпадает ли частота органа (МГц) с COM1 (кГц) с допуском округления."""
+    try:
+        mine = int(round(float(mhz) * 1000))
+    except (TypeError, ValueError):
+        return False
+    return abs(mine - int(khz)) <= int(tolerance)
 
 
 def haversine_km(lat1, lon1, lat2, lon2) -> float:
@@ -75,10 +87,15 @@ class Unit:
     airport: Optional[str] = None
     sector_id: Optional[str] = None
     source: str = ""
+    # Прежние частоты: yaml до apt.dat и apt.dat до atc.dat. Пилот может быть на любой из них.
+    aliases: List[float] = field(default_factory=list)
 
     @property
     def khz(self) -> int:
         return int(round(self.freq * 1000))
+
+    def matches_khz(self, khz: int, tolerance: int = COM_MATCH_KHZ) -> bool:
+        return any(com_match(mhz, khz, tolerance) for mhz in (self.freq, *self.aliases))
 
     @property
     def key(self) -> str:
@@ -270,4 +287,4 @@ class Airspace:
         return out
 
     def units_on_freq(self, khz: int) -> List[Unit]:
-        return [u for u in self.all_units() if abs(u.khz - khz) <= 3]
+        return [u for u in self.all_units() if u.matches_khz(khz)]
