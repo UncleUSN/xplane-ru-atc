@@ -16,6 +16,7 @@ from .phraseology.courtesy import (
     append_clause, day_part, farewell_options, greeting_options, hour_of, insert_greeting,
     is_only_courtesy, normalize_chattiness, reply_options, PROBS,
 )
+from .phraseology.callsign import extract_callsign
 from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
 from .flightplan.model import FlightPlan
@@ -109,6 +110,11 @@ class Controller:
         self.sim: SimState = SimState()
         self.plan: Optional[FlightPlan] = None         # план из FMC/.fms (None — только config.yaml)
         self.airlines: Dict[str, str] = dict(cfg.get("airlines") or {})
+        # Позывной, названный в эфире, важнее номера рейса из FMC и config.yaml.
+        self.radio_callsign: Optional[Tuple[str, str]] = None
+        self.fmc_callsign: Optional[Tuple[str, str]] = None
+        self._callsign_mismatches: set = set()
+        self._fmc_conflict_noted = False
         self.nav = None                                 # кэш навигации X-Plane, если собран
         self.nav_radius_km = float((cfg.get("navdata") or {}).get("corridor_km") or 50)
         self.nearby = None
@@ -251,6 +257,13 @@ class Controller:
         if not m or m.group(1) not in self.airlines:
             return
         spoken, num = self.airlines[m.group(1)], m.group(2).lstrip("0") or "0"
+        self.fmc_callsign = (spoken, num)
+        if self.radio_callsign:
+            # Первая передача в эфире уже задала позывной — FMC его не переписывает.
+            if (spoken, num) != self.radio_callsign and not self._fmc_conflict_noted:
+                self._fmc_conflict_noted = True
+                msgs.append(f"В FMC рейс {flt} ({spoken} {num}), в эфире принят {self.r.callsign}")
+            return
         if (self.r.cs_spoken, self.r.cs_number) != (spoken, num):
             self.r.cs_spoken, self.r.cs_number = spoken, num
             msgs.append(f"Позывной из FMC ({flt}): {spoken} {num}")
@@ -443,6 +456,42 @@ class Controller:
             return None
         return None
 
+    def _callsign_origin(self) -> str:
+        if self.radio_callsign:
+            return "эфир"
+        if self.fmc_callsign:
+            return "FMC"
+        return "config"
+
+    def _adopt_callsign(self, msg: ParsedMessage, out: List[Event], s: SimState) -> None:
+        """Первый названный в эфире позывной заменяет config и FMC. Дальше другой — только в журнал."""
+        heard = extract_callsign(msg.norm, self.airlines)
+        if heard:
+            msg.callsign = heard
+        hit = msg.callsign
+        if not hit:
+            return
+        new = (hit.spoken, hit.number)
+        if self.radio_callsign is None:
+            self.radio_callsign = new
+            old = f"{self.r.cs_spoken} {self.r.cs_number}".strip()
+            self.r.cs_spoken, self.r.cs_number = new
+            if old == hit.label:
+                text = f"Позывной по эфиру: {hit.label}"
+            else:
+                text = f"Позывной по эфиру: {hit.label} (раньше {old})"
+            log.info(text)
+            out.append(Hint(text=text, t=s.t, key="callsign"))
+            return
+        if new == self.radio_callsign:
+            return
+        if new in self._callsign_mismatches:
+            return
+        self._callsign_mismatches.add(new)
+        text = f"В эфире назван {hit.label}, продолжаем {self.r.callsign}"
+        log.info(text)
+        out.append(Hint(text=text, t=s.t, key="callsign"))
+
     def on_pilot(self, text: str, s: Optional[SimState] = None) -> List[Event]:
         s = s or self.sim
         msg = parse(text)
@@ -452,6 +501,8 @@ class Controller:
         pm = PilotMessage(text=text, norm=msg.norm, intent=msg.intent, t=s.t, unit=unit)
         out.append(pm)
         self.events_log.append(pm)
+        # До проверки «это только приветствие»: позывной в этой фразе уже наш.
+        self._adopt_callsign(msg, out, s)
         self._pilot_greet = bool(msg.greet)
         self._pilot_thanks = bool(msg.thanks)
         self._pilot_goodbye = bool(msg.goodbye)
@@ -1242,6 +1293,7 @@ class Controller:
             "dep_rwy": self.dep_rwy.id if self.dep_rwy else "-",
             "arr_rwy": self.arr_rwy.id if self.arr_rwy else "-",
             "pending": ", ".join(f"{k}={v}" for k, v in self.pending.items.items()) if self.pending else "-",
+            "callsign": f"{self.r.callsign} ({self._callsign_origin()})",
             "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
             "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
             "ctrl_type": self.controlling.type if self.controlling else "",

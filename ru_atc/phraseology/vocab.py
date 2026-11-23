@@ -29,6 +29,8 @@ def build_vocabulary(extra: Iterable[str] = ()) -> List[str]:
     words: Set[str] = set(BASE.split())
     words |= set(DIGITS) | set(TEENS) | {w for w in TENS if w} | {w for w in HUNDREDS if w}
     words |= {"одна", "две", "двух", "трех", "четырех", "пяти"}
+    from .callsign import alias_tokens
+    words |= set(alias_tokens())
     for phrase in extra:
         for w in re.split(r"[\s\-,]+", str(phrase).lower().replace("ё", "е")):
             if w and not w.isdigit():

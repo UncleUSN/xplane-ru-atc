@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .callsign import HeardCallsign, extract_callsign
 from .confirm import acknowledgement_span
 from .courtesy import annotate
 from .numbers import words_to_digits
@@ -87,6 +88,7 @@ class ParsedMessage:
     thanks: bool = False
     goodbye: bool = False
     farewell: bool = False
+    callsign: Optional[HeardCallsign] = None
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<{self.intent} {self.slots} '{self.norm}'>"
@@ -180,6 +182,7 @@ def parse(text: str) -> ParsedMessage:
         msg.intents.remove("request_lineup")
     msg.intent = msg.intents[0] if msg.intents else "unknown"
     msg.slots = extract_slots(norm)
+    msg.callsign = extract_callsign(norm)
     # «подтверждаю» / «понял» / «роджер», в том числе с опечаткой распознавателя.
     # «не понял» сюда не попадает: отрицание отсекается, остаётся say_again.
     if acknowledgement_span(norm.split()):
@@ -192,4 +195,11 @@ def parse(text: str) -> ParsedMessage:
         msg.intent = "readback"
     # «добрый день» и «до свидания» не меняют просьбу и не делают фразу незнакомой.
     annotate(msg)
+    # Одно название борта без другой просьбы — выход на связь, а не «повторите».
+    if msg.callsign and msg.intent == "unknown" and not msg.slots:
+        others = [i for i in msg.intents if i not in ("unknown", "check_in")]
+        if not others:
+            msg.intent = "check_in"
+            if "check_in" not in msg.intents:
+                msg.intents.append("check_in")
     return msg

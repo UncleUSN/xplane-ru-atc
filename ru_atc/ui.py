@@ -30,10 +30,10 @@ def run_tk(app):
     top = tk.Frame(full, bg=bg)
     top.pack(fill="x", padx=8, pady=6)
     vars_ = {k: tk.StringVar(value="-") for k in
-             ("phase", "conn", "com", "alt", "spd", "sq", "cleared", "ctrl", "handoff", "rwy", "pending")}
-    rows = [("Фаза", "phase"), ("Связь с X-Plane", "conn"), ("COM1 акт/рез", "com"), ("Высота / VS", "alt"),
-            ("IAS / GS", "spd"), ("Ответчик", "sq"), ("Разрешено", "cleared"), ("Работаете с", "ctrl"),
-            ("Передан на", "handoff"), ("ВПП выл/пос", "rwy"), ("Ждём readback", "pending")]
+             ("phase", "callsign", "conn", "com", "alt", "spd", "sq", "cleared", "ctrl", "handoff", "rwy", "pending")}
+    rows = [("Фаза", "phase"), ("Позывной", "callsign"), ("Связь с X-Plane", "conn"), ("COM1 акт/рез", "com"),
+            ("Высота / VS", "alt"), ("IAS / GS", "spd"), ("Ответчик", "sq"), ("Разрешено", "cleared"),
+            ("Работаете с", "ctrl"), ("Передан на", "handoff"), ("ВПП выл/пос", "rwy"), ("Ждём readback", "pending")]
     for i, (lbl, key) in enumerate(rows):
         tk.Label(top, text=lbl + ":", fg="#9cdcfe", bg=bg, font=font, anchor="w").grid(row=i % 6, column=(i // 6) * 2, sticky="w", padx=4)
         tk.Label(top, textvariable=vars_[key], fg=fg, bg=bg, font=font, anchor="w", width=36).grid(row=i % 6, column=(i // 6) * 2 + 1, sticky="w")
@@ -179,7 +179,8 @@ def run_tk(app):
                     history.add_pilot(p.text)
                     refresh_compact()
                 elif kind == "hint":
-                    add(f"· {p.text}" if p.key == "phase" else f"⚠ {p.text}", "info" if p.key == "phase" else "hint")
+                    quiet = p.key in ("phase", "callsign")
+                    add(f"· {p.text}" if quiet else f"⚠ {p.text}", "info" if quiet else "hint")
                 elif kind == "nav_progress":
                     nav_var.set(str(p))
                     c_nav.set(str(p)[:90])
@@ -195,6 +196,7 @@ def run_tk(app):
                 elif kind == "state":
                     s, st, err = p
                     vars_["phase"].set(f"{st['phase']} — {PHASE_RU.get(Phase(st['phase']), '')}")
+                    vars_["callsign"].set(st.get("callsign", "-"))
                     vars_["conn"].set("OK" if s.connected else f"нет данных {('— ' + err) if err else ''}"[:60])
                     vars_["com"].set(f"{s.com1_khz / 1000:.3f} / {s.com1_stby_khz / 1000:.3f}")
                     vars_["alt"].set(f"{s.alt_ind_ft:.0f} ft / {s.vs_fpm:+.0f} fpm")
@@ -209,7 +211,8 @@ def run_tk(app):
                     if st.get("nav"):
                         nav_var.set(st["nav"])
                         c_nav.set(st["nav"][:90])
-                    c_state.set(f"{st['phase']} | {st['controlling']} | {st['cleared']} | SQ {st['squawk']}"
+                    c_state.set(f"{st.get('callsign', '-')} | {st['phase']} | {st['controlling']} | "
+                                f"{st['cleared']} | SQ {st['squawk']}"
                                 + ("" if s.connected else " | нет связи с X-Plane"))
                     c_plan.set("План: " + st.get("plan", "-"))
                     show_avatar(st.get("ctrl_type") or "")

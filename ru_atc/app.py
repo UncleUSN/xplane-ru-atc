@@ -122,7 +122,9 @@ class App:
                                    f"{vc.get('vosk_model_path') if vc.get('stt_engine', 'vosk') == 'vosk' else vc.get('whisper_model')})…"))
             t0 = time.time()
             try:
-                extra = [self.cfg["callsign"]["spoken"]] + [u.callsign for u in self.airspace.all_units()] + \
+                from .phraseology.callsign import alias_tokens
+                extra = [self.cfg["callsign"]["spoken"]] + list(alias_tokens()) + \
+                    [u.callsign for u in self.airspace.all_units()] + \
                     [a.name for a in self.airspace.airports.values()] + [a.name_gen for a in self.airspace.airports.values()]
                 self.stt = make_stt(vc, extra)
                 if getattr(self.stt, "name", "") == "none":
