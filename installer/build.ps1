@@ -83,28 +83,45 @@ if (-not $PortAudio) {
 }
 Write-Host "PortAudio: $($PortAudio.FullName)"
 
-Write-Host "Проверка запуска RU-ATC.exe --smoke..."
-$SmokeReport = Join-Path $Root "dist\smoke.txt"
-if (Test-Path -LiteralPath $SmokeReport) { Remove-Item -LiteralPath $SmokeReport -Force }
-$env:RU_ATC_SMOKE_REPORT = $SmokeReport
-$proc = Start-Process -FilePath $Exe -ArgumentList "--smoke" -WorkingDirectory $Dist -WindowStyle Hidden -PassThru
-if (-not $proc.WaitForExit(300000)) {
-    & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
-    if (Test-Path -LiteralPath $SmokeReport) {
-        Write-Host "---- smoke (таймаут) ----"
-        Get-Content -LiteralPath $SmokeReport -Encoding UTF8 | Write-Host
+# Только для проверки exe. В установщик эти переменные не попадают.
+$env:PYGAME_HIDE_SUPPORT_PROMPT = "1"
+$env:SDL_VIDEODRIVER = "dummy"
+$env:SDL_AUDIODRIVER = "dummy"
+$env:KMP_DUPLICATE_LIB_OK = "TRUE"
+
+function Invoke-RuAtc {
+    param(
+        [Parameter(Mandatory = $true)][string]$Argument,
+        [Parameter(Mandatory = $true)][int]$TimeoutMs,
+        [Parameter(Mandatory = $true)][string]$Report
+    )
+    if (Test-Path -LiteralPath $Report) { Remove-Item -LiteralPath $Report -Force }
+    $env:RU_ATC_SMOKE_REPORT = $Report
+    Write-Host "Проверка запуска RU-ATC.exe $Argument..."
+    $proc = Start-Process -FilePath $Exe -ArgumentList $Argument -WorkingDirectory $Dist -WindowStyle Hidden -PassThru
+    if (-not $proc.WaitForExit($TimeoutMs)) {
+        & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+        if (Test-Path -LiteralPath $Report) {
+            Write-Host "---- $Argument (таймаут) ----"
+            Get-Content -LiteralPath $Report -Encoding UTF8 | Write-Host
+        }
+        throw "RU-ATC.exe $Argument не завершился за $([int]($TimeoutMs / 1000)) с"
     }
-    throw "RU-ATC.exe --smoke не завершился за 5 минут"
+    $proc.Refresh()
+    if (Test-Path -LiteralPath $Report) {
+        Write-Host "---- $Argument ----"
+        Get-Content -LiteralPath $Report -Encoding UTF8 | Write-Host
+        Write-Host "---- /$Argument ----"
+    }
+    if ($proc.ExitCode -ne 0) {
+        throw "RU-ATC.exe $Argument завершился с кодом $($proc.ExitCode)"
+    }
 }
-$proc.Refresh()
-if (Test-Path -LiteralPath $SmokeReport) {
-    Write-Host "---- smoke ----"
-    Get-Content -LiteralPath $SmokeReport -Encoding UTF8 | Write-Host
-    Write-Host "---- /smoke ----"
-}
-if ($proc.ExitCode -ne 0) {
-    throw "RU-ATC.exe --smoke завершился с кодом $($proc.ExitCode)"
-}
+
+# --help проверяет, что загрузчик и пакет вообще стартуют. --smoke грузит torch;
+# import sounddevice там нет: Pa_Initialize на бегуне без звуковой карты не возвращается.
+Invoke-RuAtc -Argument "--help" -TimeoutMs 120000 -Report (Join-Path $Root "dist\help.txt")
+Invoke-RuAtc -Argument "--smoke" -TimeoutMs 600000 -Report (Join-Path $Root "dist\smoke.txt")
 Remove-Item -ErrorAction SilentlyContinue Env:\RU_ATC_SMOKE_REPORT
 
 $IsccCandidates = @(

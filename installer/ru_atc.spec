@@ -60,7 +60,6 @@ hidden = collect_submodules("ru_atc") + [
     "pythoncom",
     "pywintypes",
     "websocket",
-    "antlr4",
     "omegaconf",
     "torch",
 ]
@@ -84,6 +83,7 @@ _TORCH_SKIP = (
     "torch.utils.tensorboard",
     "torch.distributed",
     "torch.testing",
+    "torch.onnx",
 )
 
 
@@ -124,7 +124,8 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    disable_windowed_traceback=False,
+    # Ошибка старта иначе показывает MessageBox и ждёт кнопку: бегун CI зависает.
+    disable_windowed_traceback=True,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,

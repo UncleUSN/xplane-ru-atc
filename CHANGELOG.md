@@ -31,7 +31,7 @@
 
 ### Исправлено
 
-* Сборка установщика находила `ru_atc/__main__.py` на каталог выше корня репозитория: у PyInstaller `SPECPATH` — это папка `installer\`, а не сам spec. Пути в spec, `build.ps1` и сценарии Inno Setup считаются от корня. В exe входит PortAudio из `_sounddevice_data`. Обход torch больше не тянет tensorboard.
+* Сборка установщика находила `ru_atc/__main__.py` на каталог выше корня репозитория: у PyInstaller `SPECPATH` — это папка `installer\`, а не сам spec. Пути в spec, `build.ps1` и сценарии Inno Setup считаются от корня. В exe входит PortAudio из `_sounddevice_data`. tensorboard в сборку не входит. Проверка exe грузит эту DLL, но не вызывает `Pa_Initialize`: на машине без звуковой карты перечисление устройств зависает.
 
 ## [0.3.0-beta] — 2026-11-23
 

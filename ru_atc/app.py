@@ -253,28 +253,55 @@ def smoke_check() -> int:
     """Импорт тяжёлых библиотек собранного exe. Код 0 — всё открылось.
 
     Окно у сборки без консоли, stdout может быть None, поэтому отчёт ещё
-    пишется в RU_ATC_SMOKE_REPORT (его задаёт installer/build.ps1).
+    пишется в RU_ATC_SMOKE_REPORT (его задаёт installer/build.ps1) после
+    каждого шага: если импорт зависнет, в файле останется имя модуля.
+
+    ``import sounddevice`` сразу вызывает ``Pa_Initialize()`` и на машине без
+    звуковой карты (бегун GitHub) зависает на перечислении устройств. Здесь
+    DLL только загружается: ``Pa_GetVersion`` инициализации не требует.
     """
+    import ctypes
     import os
     os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
     lines: List[str] = []
     rc = 0
+    report = os.environ.get("RU_ATC_SMOKE_REPORT")
+
+    def flush() -> None:
+        if not report:
+            return
+        dest = Path(report)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def ok(text: str) -> None:
         lines.append(f"ок {text}")
+        flush()
 
     def fail(text: str) -> None:
         nonlocal rc
         rc = 1
         lines.append(f"ошибка {text}")
+        flush()
 
-    modules = (
+    def step(name: str):
+        lines.append(f"… {name}")
+        flush()
+        try:
+            __import__(name)
+        except Exception as exc:
+            fail(f"{name}: {type(exc).__name__}: {exc}")
+        else:
+            lines.pop()
+            ok(name)
+
+    for name in (
         "yaml",
         "numpy",
-        "sounddevice",
         "_sounddevice",
         "_sounddevice_data",
         "vosk",
@@ -285,18 +312,20 @@ def smoke_check() -> int:
         "pygame",
         "pyttsx3",
         "tkinter",
-    )
-    for name in modules:
-        try:
-            __import__(name)
-        except Exception as exc:
-            fail(f"{name}: {type(exc).__name__}: {exc}")
-        else:
-            ok(name)
+    ):
+        step(name)
     try:
-        import sounddevice as sd
-        version = sd.get_portaudio_version()
-        ok(f"portaudio {version[0]} {version[1]}")
+        lines.append("… portaudio dll")
+        flush()
+        import _sounddevice_data
+        dll_path = Path(next(iter(_sounddevice_data.__path__))) / "portaudio-binaries" / "libportaudio64bit.dll"
+        if not dll_path.is_file():
+            fail(f"нет {dll_path}")
+        else:
+            lib = ctypes.CDLL(str(dll_path))
+            lib.Pa_GetVersion.restype = ctypes.c_int
+            lines.pop()
+            ok(f"portaudio {dll_path.name} Pa_GetVersion={int(lib.Pa_GetVersion())}")
     except Exception as exc:
         fail(f"portaudio: {type(exc).__name__}: {exc}")
     try:
@@ -324,15 +353,7 @@ def smoke_check() -> int:
             else:
                 fail(f"нет файла {path}")
     text = "\n".join(lines) + "\n"
-    report = sys.environ.get("RU_ATC_SMOKE_REPORT")
-    if report:
-        try:
-            dest = Path(report)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(text, encoding="utf-8")
-        except Exception as exc:
-            fail(f"отчёт {report}: {exc}")
-            text = "\n".join(lines) + "\n"
+    flush()
     try:
         sys.stdout.write(text)
     except Exception:
