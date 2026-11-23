@@ -131,6 +131,19 @@ _UNITS.update({"одна": 1, "одну": 1, "одной": 1, "две": 2, "ед
 # Косвенные падежи (после ё->е): "до четырех тысяч", "двухсот" и т.п.
 _UNITS.update({"одного": 1, "двух": 2, "трех": 3, "четырех": 4, "пяти": 5, "шести": 6,
                "семи": 7, "восьми": 8, "девяти": 9, "четыре": 4})
+# Порядковые только как хвост числа: «пятьсот первый» = 501. Само по себе «второй» не цифра
+# («ухожу на второй круг» должно остаться фразой).
+_ORDINALS = {
+    "первый": 1, "первая": 1, "первое": 1, "первого": 1, "первому": 1, "первым": 1, "первой": 1,
+    "второй": 2, "вторая": 2, "второе": 2, "второго": 2, "второму": 2, "вторым": 2,
+    "третий": 3, "третья": 3, "третье": 3, "третьего": 3, "третью": 3,
+    "четвертый": 4, "четвертая": 4, "четвертое": 4, "четвертого": 4,
+    "пятый": 5, "пятая": 5, "пятое": 5, "пятого": 5,
+    "шестой": 6, "шестая": 6, "шестое": 6, "шестого": 6,
+    "седьмой": 7, "седьмая": 7, "седьмое": 7, "седьмого": 7,
+    "восьмой": 8, "восьмая": 8, "восьмое": 8, "восьмого": 8,
+    "девятый": 9, "девятая": 9, "девятое": 9, "девятого": 9,
+}
 _TEENS = {w: 10 + i for i, w in enumerate(TEENS)}
 _TEENS.update({w[:-1] + "и": 10 + i for i, w in enumerate(TEENS)})   # десяти, двенадцати...
 _TENS = {w: i * 10 for i, w in enumerate(TENS) if w}
@@ -145,6 +158,10 @@ _DECIMAL = {"запятая", "точка"}
 
 def _is_num_word(w: str) -> bool:
     return w in _UNITS or w in _TEENS or w in _TENS or w in _HUNDREDS or w in _THOUSAND
+
+
+def _extends_number(w: str) -> bool:
+    return _is_num_word(w) or w in _ORDINALS
 
 
 def _parse_run(words: List[str]) -> List[str]:
@@ -194,6 +211,17 @@ def _parse_run(words: List[str]) -> List[str]:
                 started = True
                 flush()
                 continue
+        elif w in _ORDINALS:
+            if have["h"] or have["t"] or total:
+                if have["u"]:
+                    flush()
+                cur += _ORDINALS[w]
+                have["u"] = True
+            else:
+                # «второй круг» — не число
+                flush()
+                out.append(w)
+                continue
         started = True
     flush()
     return out
@@ -206,8 +234,8 @@ def words_to_digits(text: str) -> str:
     i = 0
     while i < len(tokens):
         if _is_num_word(tokens[i]):
-            j = i
-            while j < len(tokens) and _is_num_word(tokens[j]):
+            j = i + 1
+            while j < len(tokens) and _extends_number(tokens[j]):
                 j += 1
             res.extend(_parse_run(tokens[i:j]))
             i = j

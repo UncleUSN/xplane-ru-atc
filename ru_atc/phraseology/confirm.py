@@ -26,7 +26,8 @@ _MULTI: Tuple[Tuple[str, ...], ...] = (
 
 _NEGATION = {"не", "ни", "нет"}
 # Слова без смысла, которые можно выкинуть, если подтверждение уже найдено.
-_FILLERS = {"да", "ну", "а", "и", "э", "эм", "мм", "ага", "угу"}
+# «приём» — обычное «подтверждаю приём», само по себе указанием не является.
+_FILLERS = {"да", "ну", "а", "и", "э", "эм", "мм", "ага", "угу", "прием"}
 
 
 def _damerau(a: str, b: str) -> int:
@@ -134,11 +135,19 @@ def _allowed_tokens(callsign: str, number: str, extra: str) -> Set[str]:
     return allowed
 
 
-def _token_allowed(tok: str, allowed: Set[str]) -> bool:
+def _token_allowed(tok: str, allowed: Set[str], station: Set[str]) -> bool:
     if tok in allowed or tok in _FILLERS:
         return True
     for a in allowed:
-        if len(a) >= 6 and abs(len(a) - len(tok)) <= 1 and _damerau(tok, a) <= 1:
+        if len(a) < 6:
+            continue
+        # Длинные имена («шереметьево» / «шереметев») терпят две правки.
+        limit = 2 if len(a) >= 8 else 1
+        if abs(len(a) - len(tok)) <= limit and _damerau(tok, a) <= limit:
+            return True
+    # «делились» вместо «деливери»: общий корень, расстояние уже большое.
+    for a in station:
+        if len(a) >= 6 and len(tok) >= 6 and tok[:4] == a[:4] and abs(len(a) - len(tok)) <= 3:
             return True
     return False
 
@@ -147,7 +156,8 @@ def is_bare_confirmation(text: str, callsign: str = "", number: str = "", extra:
     """Текст — только подтверждение, можно с позывным и позывным органа.
 
     Лишние слова (ВПП, эшелон, частота…) делают фразу не «голой»: её разбирает
-    обычная проверка readback и ловит неверное значение.
+    обычная проверка readback и ловит неверное значение. Искажённый позывной
+    органа («шереметев», «делились») и «приём» голым подтверждением остаются.
     """
     from .parser import normalize
     tokens = normalize(text or "").split()
@@ -157,4 +167,5 @@ def is_bare_confirmation(text: str, callsign: str = "", number: str = "", extra:
     if rest is None:
         return False
     allowed = _allowed_tokens(callsign, number, extra)
-    return all(_token_allowed(tok, allowed) for tok in rest)
+    station = set(normalize(extra).split()) if extra else set()
+    return all(_token_allowed(tok, allowed, station) for tok in rest)
