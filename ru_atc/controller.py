@@ -12,6 +12,10 @@ from .events import Hint, PilotMessage, Transmission
 from .model import SimState
 from .phases import Phase, PhaseTracker
 from .phraseology.confirm import is_bare_confirmation
+from .phraseology.courtesy import (
+    append_clause, day_part, farewell_options, greeting_options, hour_of, insert_greeting,
+    is_only_courtesy, normalize_chattiness, reply_options, PROBS,
+)
 from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
 from .flightplan.model import FlightPlan
@@ -110,6 +114,14 @@ class Controller:
         self.nearby = None
         self._nav_t = -1e9
         self._nav_key = None
+        self.chattiness = normalize_chattiness((cfg.get("atc") or {}).get("chattiness", "normal"))
+        # Отдельный поток: код ответчика по-прежнему берётся из self.rng.
+        self.talk = random.Random()
+        self.talk.setstate(self.rng.getstate())
+        self._met: set = set()
+        self._pilot_greet = False
+        self._pilot_thanks = False
+        self._pilot_goodbye = False
 
     # ------------------------------------------------------------------ план полёта (FMC Zibo / .fms)
     def _plan_for(self, icao: str) -> Optional[FlightPlan]:
@@ -311,8 +323,11 @@ class Controller:
 
     def tx(self, unit: Unit, template: str, s: SimState, kind: str = "atc",
            readback: Optional[Dict[str, object]] = None, after: Optional[str] = None,
-           after_unit: Optional[Unit] = None) -> Transmission:
-        # Позывной борта — первым, затем позывной органа (стандартный порядок ФАП)
+           after_unit: Optional[Unit] = None, decorate: bool = True) -> Transmission:
+        # Позывной борта — первым, затем позывной органа (стандартный порядок ФАП).
+        # Приветствие и прощание дописываются вокруг шаблона и не меняют readback.
+        if decorate:
+            template = self._decorate(unit, template, s, kind)
         disp, speech = self.r.render(template)
         t = Transmission(unit=unit, display=disp, speech=speech, t=s.t, kind=kind)
         if readback:
@@ -437,45 +452,66 @@ class Controller:
         pm = PilotMessage(text=text, norm=msg.norm, intent=msg.intent, t=s.t, unit=unit)
         out.append(pm)
         self.events_log.append(pm)
-        if unit is None:
-            out.append(Hint(text=f"На частоте {s.com1_khz / 1000:.3f} никто не отвечает "
-                                 f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
-            return out
-        # Пилот вышел на связь с органом, куда его передали
-        if self.handoff_to and self.same_unit(unit, self.handoff_to):
-            self.controlling = unit
-            self.handoff_to = None
-        elif self.controlling is None:
-            self.controlling = unit
+        self._pilot_greet = bool(msg.greet)
+        self._pilot_thanks = bool(msg.thanks)
+        self._pilot_goodbye = bool(msg.goodbye)
+        try:
+            if unit is None:
+                out.append(Hint(text=f"На частоте {s.com1_khz / 1000:.3f} никто не отвечает "
+                                     f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
+                return out
+            # «спасибо» не прячет посторонние слова: иначе мусор не дойдёт до readback.
+            if (msg.greet or msg.farewell) and msg.intent in ("farewell", "check_in") \
+                    and "wilco" not in msg.intents and not msg.slots and "на связи" not in msg.norm \
+                    and not self._pure_courtesy(msg, unit):
+                msg.intent = "unknown"
+            # Пилот вышел на связь с органом, куда его передали
+            if self.handoff_to and self.same_unit(unit, self.handoff_to):
+                self.controlling = unit
+                self.handoff_to = None
+            elif self.controlling is None:
+                self.controlling = unit
 
-        # 1) readback
-        rel_keys = {"level": ("level", "target_level"), "alt_ft": ("alt_ft", "target_alt_ft"),
-                    "squawk": ("squawk",), "freq": ("freq",), "runway": ("runway",), "qnh": ("qnh",)}
-        has_rel = bool(self.pending) and any(
-            k in msg.slots for pk in self.pending.items for k in rel_keys.get(pk, ()))
-        if self.pending and self.same_unit(self.pending.unit, unit) and (
-                msg.intent in ("readback", "wilco", "unknown")
-                or (has_rel and not msg.intent.startswith("request_"))):
-            res = self._check_readback(msg, s)
-            if res is not None:
+            # 1) readback
+            rel_keys = {"level": ("level", "target_level"), "alt_ft": ("alt_ft", "target_alt_ft"),
+                        "squawk": ("squawk",), "freq": ("freq",), "runway": ("runway",), "qnh": ("qnh",)}
+            has_rel = bool(self.pending) and any(
+                k in msg.slots for pk in self.pending.items for k in rel_keys.get(pk, ()))
+            # Одно «добрый день» или «спасибо», пока ждём повтор, не считается ошибкой
+            # и не открывает указание заново.
+            if self.pending and self.same_unit(self.pending.unit, unit) and self._pure_courtesy(msg, unit):
+                reply = self._courtesy_reply(msg, s, unit)
+                if reply:
+                    out.append(reply)
+                return out
+            if self.pending and self.same_unit(self.pending.unit, unit) and (
+                    msg.intent in ("readback", "wilco", "unknown")
+                    or "wilco" in msg.intents
+                    or (has_rel and not msg.intent.startswith("request_"))):
+                res = self._check_readback(msg, s)
+                if res is not None:
+                    out.append(res)
+                    return out
+                # Голое «понял» закрыло указание без ответной реплики — не проваливаться в «повторите».
+                # Верный readback частоты по-прежнему пропускается дальше (доклад на связи в той же фразе).
+                if self.pending is None:
+                    return out
+            # 2) направить к нужному органу
+            if needed and self.strict_freq and not self.same_unit(unit, needed) and unit.type != needed.type:
+                out.append(self.tx(unit, f"{{cs}}, {unit.callsign}, {self.handoff_template(needed)}", s))
+                self.handoff_to = needed
+                return out
+            handler = getattr(self, f"_h_{msg.intent}", None)
+            if handler is None:
+                handler = self._h_unknown
+            res = handler(msg, s, unit)
+            if res:
                 out.append(res)
-                return out
-            # Голое «понял» закрыло указание без ответной реплики — не проваливаться в «повторите».
-            # Верный readback частоты по-прежнему пропускается дальше (доклад на связи в той же фразе).
-            if self.pending is None and msg.intent == "wilco":
-                return out
-        # 2) направить к нужному органу
-        if needed and self.strict_freq and not self.same_unit(unit, needed) and unit.type != needed.type:
-            out.append(self.tx(unit, f"{{cs}}, {unit.callsign}, {self.handoff_template(needed)}", s))
-            self.handoff_to = needed
             return out
-        handler = getattr(self, f"_h_{msg.intent}", None)
-        if handler is None:
-            handler = self._h_unknown
-        res = handler(msg, s, unit)
-        if res:
-            out.append(res)
-        return out
+        finally:
+            self._pilot_greet = False
+            self._pilot_thanks = False
+            self._pilot_goodbye = False
 
     # ------------------------------------------------------------------ readback
     def _lenient_readback(self) -> bool:
@@ -574,9 +610,90 @@ class Controller:
                 "freq": f"частота {{freq:{v}}}", "runway": f"ВПП {{rwy:{v}}}",
                 "qnh": f"{{qnh:{v}}}"}.get(k, str(v))
 
+    # ------------------------------------------------------------------ вежливость
+    _NO_COURTESY = (
+        "неправильно", "подтвердите", "проверьте", "остановитесь", "не разреш",
+        "не получено", "прекратите", "уходите на второй", "повторите", "не наблюдаю",
+    )
+
+    def _chance(self, name: str) -> bool:
+        p = PROBS.get(self.chattiness, PROBS["normal"]).get(name, 0.0)
+        if p <= 0:
+            return False
+        return self.talk.random() < p
+
+    def _local_part(self, s: SimState) -> str:
+        return day_part(hour_of(getattr(s, "local_time_sec", None))[0])
+
+    def _pure_courtesy(self, msg: ParsedMessage, unit: Optional[Unit]) -> bool:
+        """Только приветствие или прощание: позывной и орган можно, значения и мусор — нет."""
+        if msg.slots or msg.intent in ("wilco", "readback") or "wilco" in msg.intents:
+            return False
+        if any(i not in ("check_in", "farewell", "unknown") for i in msg.intents):
+            return False
+        if not (msg.greet or msg.farewell):
+            return False
+        extra = unit.callsign if unit else ""
+        return is_only_courtesy(msg.norm, self.r.cs_spoken, self.r.cs_number, extra)
+
+    def _landing_farewell(self, template: str, s: SimState) -> bool:
+        if "уход" in template or "второй" in template:
+            return False
+        if "посадку разрешаю" in template:
+            return True
+        nxt = self.handoff_to
+        return bool(nxt and nxt.type == "tower" and not s.on_ground and "работайте с" in template)
+
+    def _short_ack(self, template: str) -> bool:
+        if any(tag in template for tag in ("{fl", "{fla", "{alt", "{sq", "{freq", "{rwy", "{qnh", "{wind")):
+            return False
+        if "работайте с" in template or "разреш" in template:
+            return False
+        return "понял" in template or "правильно" in template
+
+    def _decorate(self, unit: Unit, template: str, s: SimState, kind: str) -> str:
+        if kind != "atc" or self.chattiness == "off":
+            return template
+        if any(word in template for word in self._NO_COURTESY):
+            return template
+        part = self._local_part(s)
+        key = unit.key
+        first = key not in self._met
+        self._met.add(key)
+        greeting = ""
+        if first and self._chance("greet"):
+            greeting = self.talk.choice(greeting_options(part))
+        elif not first and self._pilot_greet and self._chance("greet_back"):
+            greeting = self.talk.choice(greeting_options(part))
+        if greeting:
+            template = insert_greeting(template, greeting)
+        if "работайте с" in template or "посадку разрешаю" in template:
+            if self._chance("farewell"):
+                template = append_clause(
+                    template, self.talk.choice(farewell_options(part, self._landing_farewell(template, s))))
+        elif not greeting and self._short_ack(template) and self._chance("touch"):
+            template = append_clause(template, "спасибо")
+        return template
+
+    def _courtesy_reply(self, msg: ParsedMessage, s: SimState, unit: Unit) -> Optional[Transmission]:
+        """Короткий ответ на голое приветствие или прощание. Молчание — тоже ответ."""
+        if self.chattiness == "off" or not self._chance("reply"):
+            return None
+        part = self._local_part(s)
+        landing = (not s.on_ground) and (
+            self.phase in (Phase.APPROACH, Phase.LANDING)
+            or (unit.type == "tower" and self.phase in (Phase.DESCENT, Phase.APPROACH, Phase.LANDING)))
+        phrase = self.talk.choice(reply_options(
+            part, landing=landing and bool(msg.goodbye or msg.farewell),
+            thanks=bool(msg.thanks) and not msg.goodbye, greet=bool(msg.greet) and not msg.farewell))
+        return self.tx(unit, f"{{cs}}, {phrase}", s, decorate=False)
+
     # ------------------------------------------------------------------ обработчики намерений
     def _h_unknown(self, msg, s, unit):
         return self.tx(unit, "{cs}, повторите", s)
+
+    def _h_farewell(self, msg, s, unit):
+        return self._courtesy_reply(msg, s, unit)
 
     def _h_say_again(self, msg, s, unit):
         if self.last_tx:

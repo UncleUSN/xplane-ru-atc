@@ -23,6 +23,16 @@ from ru_atc.phraseology.parser import parse
     ("как слышите", "radio_check"),
     ("повторите", "say_again"),
     ("Пулково Вышка, Аэрофлот 1234, добрый вечер", "check_in"),
+    ("добрый день", "check_in"),
+    ("здравствуйте", "check_in"),
+    ("до свидания", "farewell"),
+    ("спасибо", "farewell"),
+    ("всего доброго", "farewell"),
+    ("хорошего дня", "farewell"),
+    ("добрый день, разрешите руление", "request_taxi"),
+    ("разрешите руление, спасибо", "request_taxi"),
+    ("подтверждаю, до свидания", "wilco"),
+    ("добрый день, подтверждаю приём", "wilco"),
 ])
 def test_intents(text, intent):
     assert parse(text).intent == intent

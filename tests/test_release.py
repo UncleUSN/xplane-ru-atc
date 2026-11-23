@@ -1,4 +1,4 @@
-"""Версия 0.3.0-beta, каталог моделей и страницы мастера установщика."""
+"""Версия 0.3.1-beta, каталог моделей и страницы мастера установщика."""
 import io
 import subprocess
 import sys
@@ -24,16 +24,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_is_single_source():
-    assert __version__ == "0.3.0-beta"
-    assert "0.3.0-beta" in window_title()
+    assert __version__ == "0.3.1-beta"
+    assert "0.3.1-beta" in window_title()
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "version =" not in text
     script = ROOT / "installer" / "print_version.py"
     assert "__init__.py" in script.read_text(encoding="utf-8")
     printed = subprocess.check_output([sys.executable, str(script)], text=True).strip()
     quad = subprocess.check_output([sys.executable, str(script), "--quad"], text=True).strip()
-    assert printed == "0.3.0-beta"
-    assert quad == "0.3.0.0"
+    assert printed == "0.3.1-beta"
+    assert quad == "0.3.1.0"
 
 
 def test_app_root_is_repo_when_not_frozen():

@@ -42,13 +42,16 @@ def test_webapi_decode_update():
 def test_apply_raw_units():
     s = apply_raw(SimState(), {"elev_m": 1000.0, "gs_ms": 100.0, "com1_raw": 118700, "baro_set_inhg": 29.92,
                                "qnh_pas": 99800.0, "on_ground": 0, "xpdr_mode": 3, "n2_1": 61.0,
-                               "zibo_xpdr_pos": 5})
+                               "zibo_xpdr_pos": 5, "local_time_sec": 8 * 3600 + 120})
     assert abs(s.alt_msl_ft - 3280.84) < 0.1
     assert abs(s.gs_kt - 194.38) < 0.1
     assert s.com1_khz == 118700
     assert abs(s.baro_set_hpa - 1013.2) < 0.2
     assert abs(s.qnh_hpa - 998) < 0.01
     assert s.on_ground is False and s.xpdr_alt_reporting and s.n2[1] == 61.0
+    assert s.local_time_sec == 8 * 3600 + 120
+    assert any(spec.name == "sim/time/local_time_sec" and spec.optional
+               for spec in all_specs(False))
 
 
 def test_com_normalization():
