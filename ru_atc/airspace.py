@@ -110,6 +110,7 @@ class Airport:
     preferred_arrival: List[str] = field(default_factory=list)
     approach_radius_km: float = 70
     radar_radius_km: float = 40
+    atis_mhz: Optional[float] = None   # ряд 1050 apt.dat или atis_freq в yaml; не орган для ответа
 
     def unit(self, t: str) -> Optional[Unit]:
         return self.units.get(t)
@@ -246,6 +247,7 @@ class Airspace:
                 preferred_arrival=[str(x) for x in a.get("preferred_arrival", [])],
                 approach_radius_km=float(a.get("approach_radius_km", 70)),
                 radar_radius_km=float(a.get("radar_radius_km", 40)),
+                atis_mhz=float(a["atis_freq"]) if a.get("atis_freq") else None,
             )
         sectors = [Sector(s["id"], s["callsign"], float(s["freq"]), s["polygon"], float(s.get("floor_ft", 0)))
                    for s in (sd.get("sectors") or [])]

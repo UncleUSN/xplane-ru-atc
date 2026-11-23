@@ -49,6 +49,19 @@ def apply_raw(state: SimState, raw: Dict[str, float]) -> SimState:
         sec = float(raw["local_time_sec"])
         if sec == sec and sec >= 0:
             state.local_time_sec = sec % 86400.0
+    if "vis_m" in raw:
+        state.vis_m = float(raw["vis_m"])
+    if "temp_c" in raw:
+        state.temp_c = float(raw["temp_c"])
+    if "dew_c" in raw:
+        state.dew_c = float(raw["dew_c"])
+    elif "dew_region_c" in raw and state.dew_c is None:
+        state.dew_c = float(raw["dew_region_c"])
+    for i in range(3):
+        if f"cloud_cov_{i}" in raw:
+            state.cloud_cov[i] = float(raw[f"cloud_cov_{i}"])
+        if f"cloud_base_{i}" in raw:
+            state.cloud_base_m[i] = float(raw[f"cloud_base_{i}"])
     return state
 
 
@@ -80,6 +93,8 @@ class DataSource:
             s = SimState(**{k: getattr(self._state, k) for k in self._state.__dataclass_fields__})
             s.n1 = list(self._state.n1)
             s.n2 = list(self._state.n2)
+            s.cloud_cov = list(self._state.cloud_cov)
+            s.cloud_base_m = list(self._state.cloud_base_m)
             s.t = self.clock()
             s.connected = self.is_connected()
             return s

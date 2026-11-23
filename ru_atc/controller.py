@@ -12,6 +12,7 @@ from .events import Hint, PilotMessage, Transmission
 from .model import SimState
 from .phases import Phase, PhaseTracker
 from .phraseology.confirm import is_bare_confirmation
+from .atis import AtisBoard, letter_index, render_broadcast
 from .phraseology.courtesy import (
     append_clause, day_part, farewell_options, greeting_options, hour_of, insert_greeting,
     is_only_courtesy, normalize_chattiness, reply_options, PROBS,
@@ -21,6 +22,7 @@ from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
 from .radio import parse_auto_tune
 from .flightplan.model import FlightPlan
+from .weather import Weather, weather_for
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +126,10 @@ class Controller:
         self.chattiness = normalize_chattiness((cfg.get("atc") or {}).get("chattiness", "normal"))
         self.auto_tune_com1 = parse_auto_tune((cfg.get("radio") or {}).get("auto_tune_com1", False))
         self._tune_khz: Optional[int] = None
+        self.atis_board = AtisBoard()
+        self.atis_ack: Dict[str, int] = {}
+        self._atis_mismatch = ""
+        self._atis_auto: Optional[tuple] = None
         # Отдельный поток: код ответчика по-прежнему берётся из self.rng.
         self.talk = random.Random()
         self.talk.setstate(self.rng.getstate())
@@ -342,6 +348,8 @@ class Controller:
            after_unit: Optional[Unit] = None, decorate: bool = True) -> Transmission:
         # Позывной борта — первым, затем позывной органа (стандартный порядок ФАП).
         # Приветствие и прощание дописываются вокруг шаблона и не меняют readback.
+        if decorate and kind == "atc" and unit.type != "atis":
+            template = self._append_atis(unit, template, s)
         if decorate:
             template = self._decorate(unit, template, s, kind)
         disp, speech = self.r.render(template)
@@ -386,6 +394,142 @@ class Controller:
         self._tune_khz = None
         return khz
 
+    # ------------------------------------------------------------------ АТИС
+    _SKIP_ATIS = (
+        "повторите", "неправильно", "подтвердите", "остановитесь", "не разреш",
+        "прекратите", "уходите", "не наблюдаю", "информац",
+    )
+
+    def _xplane_dir(self) -> str:
+        nav = str((self.cfg.get("navdata") or {}).get("xplane_path") or "")
+        imported = str((self.cfg.get("flight_plan_import") or {}).get("xplane_path") or "")
+        return nav or imported
+
+    def _atis_mhz(self, ap: Airport) -> Optional[float]:
+        nav = getattr(self, "nav", None)
+        if nav is not None:
+            try:
+                comms = nav.comms(ap.icao)
+            except Exception:
+                comms = {}
+            if comms.get("atis"):
+                return float(comms["atis"][0])
+        return ap.atis_mhz
+
+    def _airport_on_atis(self, s: SimState) -> Optional[Airport]:
+        if not s.com1_khz:
+            return None
+        for ap in self.airspace.airports.values():
+            mhz = self._atis_mhz(ap)
+            if mhz and abs(int(round(mhz * 1000)) - int(s.com1_khz)) <= 5:
+                return ap
+        nav = getattr(self, "nav", None)
+        if nav is None:
+            return None
+        try:
+            code = nav.atis_icao(s.com1_khz)
+        except Exception:
+            code = None
+        if not code:
+            return None
+        return self.airspace.airports.get(code)
+
+    def _atis_context(self, unit: Optional[Unit]) -> Airport:
+        if unit and unit.airport and unit.airport in self.airspace.airports:
+            return self.airspace.airports[unit.airport]
+        if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB):
+            return self.dep
+        return self.arr
+
+    def _weather_at(self, ap: Airport, s: SimState) -> Weather:
+        return weather_for(s, ap.icao, ap.distance_km(s.lat, s.lon), self._xplane_dir())
+
+    def _atis_letter(self, s: SimState, ap: Optional[Airport]):
+        if ap is None:
+            return None
+        wx = self._weather_at(ap, s)
+        if not wx.usable():
+            return None
+        hour, _source = hour_of(getattr(s, "local_time_sec", None))
+        return self.atis_board.current(ap.icao, wx, hour), wx
+
+    def _observe_atis_report(self, msg: ParsedMessage, s: SimState, unit: Optional[Unit]) -> None:
+        word = msg.slots.get("atis") if msg.slots else None
+        if not word:
+            return
+        ap = self._airport_on_atis(s) or self._atis_context(unit)
+        got = self._atis_letter(s, ap)
+        if not got:
+            return
+        (index, current), _wx = got
+        heard = letter_index(str(word))
+        if heard is None:
+            return
+        if heard == index:
+            self.atis_ack[ap.icao] = index
+            self._atis_mismatch = ""
+        else:
+            self.atis_ack.pop(ap.icao, None)
+            shown = str(word)[:1].upper() + str(word)[1:]
+            self._atis_mismatch = f"информация {current}, не {shown}"
+
+    def _append_atis(self, unit: Unit, template: str, s: SimState) -> str:
+        if any(word in template for word in self._SKIP_ATIS):
+            return template
+        if self._atis_mismatch:
+            text = ", " + self._atis_mismatch
+            self._atis_mismatch = ""
+            return template + text
+        ap = self._atis_context(unit)
+        got = self._atis_letter(s, ap)
+        if not got:
+            return template
+        (index, word), _wx = got
+        if self.atis_ack.get(ap.icao) == index:
+            return template
+        return template + f", информация {word}"
+
+    def _atis_unit(self, ap: Airport) -> Unit:
+        mhz = self._atis_mhz(ap) or 0.0
+        return Unit("atis", f"{ap.name}-АТИС", float(mhz), airport=ap.icao, source="atis")
+
+    def _runway_for_atis(self, ap: Airport, s: SimState) -> str:
+        if ap is self.dep and self.dep_rwy:
+            return self.dep_rwy.id
+        if ap is self.arr and self.arr_rwy:
+            return self.arr_rwy.id
+        if not ap.runways:
+            return ""
+        try:
+            return ap.select_runway(s.wind_dir, s.wind_kt, arrival=ap is self.arr).id
+        except Exception:
+            return ap.runways[0].id
+
+    def _play_atis(self, ap: Optional[Airport], s: SimState, force: bool = False) -> Optional[Transmission]:
+        if ap is None:
+            return None
+        got = self._atis_letter(s, ap)
+        if not got:
+            if not force:
+                return None
+            unit = self._atis_unit(ap)
+            text = f"{ap.name}, АТИС. Фактической погоды нет."
+            t = Transmission(unit, text, text, s.t, "atis")
+            self.events_log.append(t)
+            return t
+        (index, word), wx = got
+        key = (ap.icao, index)
+        if not force and self._atis_auto and self._atis_auto[0] == key and s.t - self._atis_auto[1] < 180:
+            return None
+        self._atis_auto = (key, s.t)
+        disp, speech = render_broadcast(ap, wx, word, self._runway_for_atis(ap, s))
+        t = Transmission(self._atis_unit(ap), disp, speech, s.t, "atis")
+        self.events_log.append(t)
+        return t
+
+    def _maybe_auto_atis(self, s: SimState) -> Optional[Transmission]:
+        return self._play_atis(self._airport_on_atis(s), s, force=False)
+
     def set_cleared(self, c: Clearance) -> None:
         self.cleared = c
 
@@ -421,6 +565,9 @@ class Controller:
             return out
         out += [e for e in self._proactive(s) if e]
         out += [e for e in self._monitor(s) if e]
+        atis = self._maybe_auto_atis(s)
+        if atis:
+            out.append(atis)
         return out
 
     # ------------------------------------------------------------------ сообщения пилота
@@ -524,9 +671,16 @@ class Controller:
         self._pilot_goodbye = bool(msg.goodbye)
         try:
             if unit is None:
-                out.append(Hint(text=f"На частоте {s.com1_khz / 1000:.3f} никто не отвечает "
-                                     f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
-                return out
+                atis_ap = self._airport_on_atis(s)
+                if atis_ap and (msg.intent in ("request_atis", "atis_ack", "check_in")
+                                or msg.slots.get("atis") or "атис" in msg.norm):
+                    unit = self._atis_unit(atis_ap)
+                else:
+                    self._observe_atis_report(msg, s, None)
+                    out.append(Hint(text=f"На частоте {s.com1_khz / 1000:.3f} никто не отвечает "
+                                         f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
+                    return out
+            self._observe_atis_report(msg, s, unit)
             # «спасибо» не прячет посторонние слова: иначе мусор не дойдёт до readback.
             if (msg.greet or msg.farewell) and msg.intent in ("farewell", "check_in") \
                     and "wilco" not in msg.intents and not msg.slots and "на связи" not in msg.norm \
@@ -555,7 +709,7 @@ class Controller:
                     and not tuned_during_readback:
                 self.controlling = unit
                 self._set_handoff(None)
-            elif self.controlling is None:
+            elif self.controlling is None and unit.type != "atis":
                 self.controlling = unit
 
             def _arrive_after_tune() -> None:
@@ -789,6 +943,21 @@ class Controller:
     def _h_radio_check(self, msg, s, unit):
         return self.tx(unit, f"{{cs}}, {unit.callsign}, слышу вас отлично", s)
 
+    def _h_request_atis(self, msg, s, unit):
+        ap = self._airport_on_atis(s) or self._atis_context(unit)
+        return self._play_atis(ap, s, force=True)
+
+    def _h_atis_ack(self, msg, s, unit):
+        ap = self._airport_on_atis(s) or self._atis_context(unit)
+        got = self._atis_letter(s, ap) if ap else None
+        if got and self.atis_ack.get(ap.icao) == got[0][0]:
+            return self.tx(unit, f"{{cs}}, информация {got[0][1]} принята", s, decorate=False)
+        if self._atis_mismatch:
+            text = self._atis_mismatch
+            self._atis_mismatch = ""
+            return self.tx(unit, "{cs}, " + text, s, decorate=False)
+        return self.tx(unit, "{cs}, назовите букву информации", s, decorate=False)
+
     def _h_wilco(self, msg, s, unit):
         return None
 
@@ -902,6 +1071,8 @@ class Controller:
 
     def _h_check_in(self, msg, s, unit):
         ph = self.phase
+        if unit.type == "atis":
+            return self._play_atis(self._atis_context(unit), s, force=True)
         self.controlling = unit
         if unit.type in ("delivery",) and not self.flags["clearance"]:
             return self._h_request_clearance(msg, s, unit)
@@ -1315,6 +1486,15 @@ class Controller:
         return out
 
     # ------------------------------------------------------------------ сводка для UI
+    def _atis_status(self) -> str:
+        ap = self.dep if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB) else self.arr
+        got = self._atis_letter(self.sim, ap)
+        if not got:
+            return "-"
+        (index, word), _wx = got
+        ack = "получена" if self.atis_ack.get(ap.icao) == index else "не подтверждена"
+        return f"{ap.icao} {word}, {ack}"
+
     def status(self) -> Dict[str, str]:
         c = self.cleared
         clr = "-" if not c else (f"FL{c.value:03d}" if c.kind == "fl" else f"{c.value} ft QNH")
@@ -1328,6 +1508,7 @@ class Controller:
             "arr_rwy": self.arr_rwy.id if self.arr_rwy else "-",
             "pending": ", ".join(f"{k}={v}" for k, v in self.pending.items.items()) if self.pending else "-",
             "callsign": f"{self.r.callsign} ({self._callsign_origin()})",
+            "atis": self._atis_status(),
             "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
             "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
             "ctrl_type": self.controlling.type if self.controlling else "",

@@ -66,7 +66,14 @@ def _set_freq(airport: Airport, kind: str, mhz: float, source: str, notes: List[
 def update_airport(airport: Airport, cache: NavCache, quiet: bool = False) -> List[str]:
     notes: List[str] = []
     comms = cache.comms(airport.icao)
+    atis = comms.get("atis")
+    if atis:
+        airport.atis_mhz = float(atis[0])
+        if airport.icao in HOME and not quiet:
+            notes.append(f"{airport.icao} АТИС {atis[0]:.3f} ({atis[2] or 'apt.dat'})")
     for kind, (mhz, _name, source) in comms.items():
+        if kind == "atis":
+            continue
         _set_freq(airport, kind, mhz, source or "apt.dat", notes, quiet)
     for role, kind in (("twr", "tower"), ("del", "delivery"), ("gnd", "ground")):
         override = cache.role_override(airport.icao, role, kind)

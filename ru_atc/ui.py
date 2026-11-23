@@ -30,10 +30,11 @@ def run_tk(app):
     top = tk.Frame(full, bg=bg)
     top.pack(fill="x", padx=8, pady=6)
     vars_ = {k: tk.StringVar(value="-") for k in
-             ("phase", "callsign", "conn", "com", "alt", "spd", "sq", "cleared", "ctrl", "handoff", "rwy", "pending")}
-    rows = [("Фаза", "phase"), ("Позывной", "callsign"), ("Связь с X-Plane", "conn"), ("COM1 акт/рез", "com"),
-            ("Высота / VS", "alt"), ("IAS / GS", "spd"), ("Ответчик", "sq"), ("Разрешено", "cleared"),
-            ("Работаете с", "ctrl"), ("Передан на", "handoff"), ("ВПП выл/пос", "rwy"), ("Ждём readback", "pending")]
+             ("phase", "callsign", "atis", "conn", "com", "alt", "spd", "sq", "cleared", "ctrl", "handoff", "rwy", "pending")}
+    rows = [("Фаза", "phase"), ("Позывной", "callsign"), ("АТИС", "atis"), ("Связь с X-Plane", "conn"),
+            ("COM1 акт/рез", "com"), ("Высота / VS", "alt"), ("IAS / GS", "spd"), ("Ответчик", "sq"),
+            ("Разрешено", "cleared"), ("Работаете с", "ctrl"), ("Передан на", "handoff"),
+            ("ВПП выл/пос", "rwy"), ("Ждём readback", "pending")]
     for i, (lbl, key) in enumerate(rows):
         tk.Label(top, text=lbl + ":", fg="#9cdcfe", bg=bg, font=font, anchor="w").grid(row=i % 6, column=(i // 6) * 2, sticky="w", padx=4)
         tk.Label(top, textvariable=vars_[key], fg=fg, bg=bg, font=font, anchor="w", width=36).grid(row=i % 6, column=(i // 6) * 2 + 1, sticky="w")
@@ -200,6 +201,7 @@ def run_tk(app):
                     s, st, err = p
                     vars_["phase"].set(f"{st['phase']} — {PHASE_RU.get(Phase(st['phase']), '')}")
                     vars_["callsign"].set(st.get("callsign", "-"))
+                    vars_["atis"].set(st.get("atis", "-"))
                     vars_["conn"].set("OK" if s.connected else f"нет данных {('— ' + err) if err else ''}"[:60])
                     vars_["com"].set(f"{s.com1_khz / 1000:.3f} / {s.com1_stby_khz / 1000:.3f}")
                     vars_["alt"].set(f"{s.alt_ind_ft:.0f} ft / {s.vs_fpm:+.0f} fpm")
