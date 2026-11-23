@@ -1,4 +1,4 @@
-# Файл создан установщиком RU ATC 0.2b.
+# Файл создан установщиком RU ATC 0.3.0-beta.
 # Распознавание: vosk-model-ru-0.42
 #   архив: https://alphacephei.com/vosk/models/vosk-model-ru-0.42.zip
 # Синтез: Silero v4_ru, голос xenia (все органы).
@@ -22,15 +22,26 @@ flight_plan:
   departure_runway: ""     # пусто -> выбор по ветру/предпочтениям из airports.yaml
   arrival_runway: ""
   arrival_stand: ""        # стоянка прибытия; пусто -> "на стоянку по указанию"
+  alternates: []           # запасные ICAO, их схемы тоже попадают в коридор
 
 # Импорт плана из FMC Zibo 737 (имеет приоритет над flight_plan выше; без плана — работаем по flight_plan)
 flight_plan_import:
   source: auto             # auto (CDU + datarefs Zibo + .fms) | fmc (только FMC) | fms (только файл) | config (выкл.)
   fmc_side: 1              # 1 — CDU КВС (fmc1), 2 — второго пилота (fmc2)
   poll_s: 2.0              # как часто читать экран CDU, с
-  xplane_path: ""          # папка X-Plane 12, напр. "D:/X-Plane 12" — для Output/FMS plans (пусто = автопоиск)
+  xplane_path: ""          # папка X-Plane 12, напр. "D:/X-Plane 12". Установщик пишет её сам.
+                           # Пусто = navdata.xplane_path, затем автопоиск. Нужна и планам FMS, и навигатору.
   fms_max_age_h: 12        # .fms старше — не брать, если FMC ещё пуст
   callsign_from_fmc: true  # позывной из FLT NO. (AFL1234 -> «Аэрофлот 1234», см. airlines)
+
+# Откуда частоты, схемы и секторы. provider: xplane | navigraph | off
+# navigraph — заглушка, подписка не подключена. off — только data/*.yaml.
+navdata:
+  provider: xplane
+  xplane_path: ""          # если пусто — берётся flight_plan_import.xplane_path
+  cache_dir: ""            # пусто = каталог данных пользователя (не папка программы)
+  corridor_km: 50          # коридор вокруг маршрута, км
+  rebuild: false           # true = пересобрать кэш на этом запуске
 
 airlines:                  # ИКАО-код компании -> позывной в эфире (для FLT NO. из FMC)
   AFL: Аэрофлот

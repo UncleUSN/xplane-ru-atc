@@ -67,6 +67,9 @@ def run_tk(app):
     plan_var = tk.StringVar(value="План: нет (config.yaml)")
     tk.Label(full, textvariable=plan_var, fg="#c586c0", bg=bg, font=font, anchor="w", justify="left",
              wraplength=1060).pack(fill="x", padx=12)
+    nav_var = tk.StringVar(value="")
+    tk.Label(full, textvariable=nav_var, fg="#808080", bg=bg, font=small, anchor="w", justify="left",
+             wraplength=1060).pack(fill="x", padx=12)
 
     log = scrolledtext.ScrolledText(full, bg="#111", fg=fg, font=font, wrap="word", height=20)
     log.pack(fill="both", expand=True, padx=8, pady=4)
@@ -130,6 +133,8 @@ def run_tk(app):
                 lbl.configure(fg="#4ec9b0")
 
     tk.Label(compact, textvariable=c_plan, fg="#c586c0", bg="#101010", font=small, anchor="w").pack(fill="x", padx=4)
+    c_nav = tk.StringVar(value="")
+    tk.Label(compact, textvariable=c_nav, fg="#808080", bg="#101010", font=small, anchor="w").pack(fill="x", padx=4)
 
     # перетаскивание безрамочной панели мышью
     drag = {"x": 0, "y": 0}
@@ -175,6 +180,9 @@ def run_tk(app):
                     refresh_compact()
                 elif kind == "hint":
                     add(f"· {p.text}" if p.key == "phase" else f"⚠ {p.text}", "info" if p.key == "phase" else "hint")
+                elif kind == "nav_progress":
+                    nav_var.set(str(p))
+                    c_nav.set(str(p)[:90])
                 elif kind == "info":
                     add(f"ℹ {p}", "info")
                 elif kind == "hint_text":
@@ -198,6 +206,9 @@ def run_tk(app):
                     vars_["rwy"].set(f"{st['dep_rwy']} / {st['arr_rwy']}")
                     vars_["pending"].set(st["pending"])
                     plan_var.set(f"Маршрут: {st.get('route', '-')}   |   План FMC: {st.get('plan', '-')}")
+                    if st.get("nav"):
+                        nav_var.set(st["nav"])
+                        c_nav.set(st["nav"][:90])
                     c_state.set(f"{st['phase']} | {st['controlling']} | {st['cleared']} | SQ {st['squawk']}"
                                 + ("" if s.connected else " | нет связи с X-Plane"))
                     c_plan.set("План: " + st.get("plan", "-"))

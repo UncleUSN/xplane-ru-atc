@@ -1,5 +1,7 @@
-"""Версия 0.2b, каталог моделей и страница мастера установщика."""
+"""Версия 0.3.0-beta, каталог моделей и страницы мастера установщика."""
 import io
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -7,7 +9,7 @@ import pytest
 
 from ru_atc import __version__, window_title
 from ru_atc.config import app_root
-from ru_atc.setup_config import render_installed_config
+from ru_atc.setup_config import apply_xplane_path, render_installed_config
 from ru_atc.voice.catalog import (
     SILERO_MODEL_ID,
     SILERO_VOICES,
@@ -22,16 +24,32 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_is_single_source():
-    assert __version__ == "0.2b"
-    assert "0.2b" in window_title()
+    assert __version__ == "0.3.0-beta"
+    assert "0.3.0-beta" in window_title()
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "version =" not in text
-    printed = (ROOT / "installer" / "print_version.py").read_text(encoding="utf-8")
-    assert "__init__.py" in printed
+    script = ROOT / "installer" / "print_version.py"
+    assert "__init__.py" in script.read_text(encoding="utf-8")
+    printed = subprocess.check_output([sys.executable, str(script)], text=True).strip()
+    quad = subprocess.check_output([sys.executable, str(script), "--quad"], text=True).strip()
+    assert printed == "0.3.0-beta"
+    assert quad == "0.3.0.0"
 
 
 def test_app_root_is_repo_when_not_frozen():
     assert app_root() == ROOT
+
+
+def test_apply_xplane_path_rewrites_both_keys_and_appends_when_missing():
+    text = "flight_plan_import:\n  xplane_path: \"\"\nnavdata:\n  xplane_path: \"\"\n# xplane_path: не трогать\n"
+    got = apply_xplane_path(text, r"D:\X-Plane 12\\")
+    assert got.count('xplane_path: "D:/X-Plane 12"') == 2
+    assert "# xplane_path: не трогать" in got
+    assert apply_xplane_path(text, "  ") == text
+    bare = "callsign:\n  spoken: Тест\n"
+    added = apply_xplane_path(bare, "E:/X-Plane 12")
+    assert 'xplane_path: "E:/X-Plane 12"' in added
+    assert "spoken: Тест" in added
 
 
 def test_catalog_matches_code():
@@ -88,6 +106,13 @@ def test_generated_installer_data_matches_catalog(tmp_path):
     assert "CreateDownloadPage" in iss
     assert "VoskCaptions" in iss and "SpeakerCaptions" in iss
     assert "config.yaml" in iss
+    assert "CreateInputDirPage" in iss
+    assert "x-plane_install_12.txt" in iss
+    assert "Resources\\default data" in iss
+    assert "set_xplane_path.ps1" in iss
+    assert "MyVersionInfo" in iss
+    ps1 = (ROOT / "installer" / "set_xplane_path.ps1").read_text(encoding="utf-8")
+    assert "xplane_path" in ps1 and "UTF8Encoding" in ps1
     assert (ROOT / "installer" / "welcome.txt").is_file()
     assert (ROOT / "installer" / "extract_model.ps1").is_file()
     assert (ROOT / "installer" / "build.ps1").is_file()

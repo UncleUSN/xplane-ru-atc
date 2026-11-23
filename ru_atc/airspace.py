@@ -42,6 +42,17 @@ def angle_diff(a: float, b: float) -> float:
     return abs((a - b + 180) % 360 - 180)
 
 
+def _ring_area(poly: List[List[float]]) -> float:
+    if len(poly) < 3:
+        return 1e18
+    acc = 0.0
+    for i in range(len(poly)):
+        y1, x1 = poly[i]
+        y2, x2 = poly[(i + 1) % len(poly)]
+        acc += x1 * y2 - x2 * y1
+    return abs(acc) / 2.0
+
+
 def point_in_polygon(lat: float, lon: float, poly: List[List[float]]) -> bool:
     inside = False
     n = len(poly)
@@ -63,6 +74,7 @@ class Unit:
     voice: Optional[str] = None
     airport: Optional[str] = None
     sector_id: Optional[str] = None
+    source: str = ""
 
     @property
     def khz(self) -> int:
@@ -140,12 +152,64 @@ class Sector:
     freq: float
     polygon: List[List[float]]
     floor_ft: float = 0
+    ceiling_ft: float = 99999
+    # 0 — центр из atc.dat, 1 — CTR/FIR из airspace.txt, 2 — yaml, 3 — TopLevel.
+    # Среди yaml и TopLevel побеждает первый в списке (как раньше). Среди данных — меньший полигон.
+    priority: int = 2
+    source: str = "yaml"
+    role: str = "ctr"
+    facility_id: str = ""
+    extra_freqs: List[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.area = _ring_area(self.polygon)
+        if len(self.polygon) >= 3:
+            lats = [p[0] for p in self.polygon]
+            lons = [p[1] for p in self.polygon]
+            self._min_lat, self._max_lat = min(lats), max(lats)
+            self._min_lon, self._max_lon = min(lons), max(lons)
+            self._bbox_ok = (self._max_lon - self._min_lon) <= 180
+        else:
+            self._bbox_ok = False
 
     def unit(self) -> Unit:
-        return Unit("control", self.callsign, self.freq, sector_id=self.id)
+        return Unit("control", self.callsign, self.freq, sector_id=self.id, source=self.source)
 
     def contains(self, lat: float, lon: float) -> bool:
         return point_in_polygon(lat, lon, self.polygon)
+
+    def bbox_hits(self, lat: float, lon: float) -> bool:
+        if not self._bbox_ok:
+            return True
+        return self._min_lat <= lat <= self._max_lat and self._min_lon <= lon <= self._max_lon
+
+    def covers_alt(self, alt_ft: Optional[float]) -> bool:
+        if alt_ft is None:
+            return True
+        return self.floor_ft <= alt_ft <= self.ceiling_ft
+
+
+def pick_sector(sectors: List[Sector], lat: float, lon: float,
+                alt_ft: Optional[float] = None) -> Optional[Sector]:
+    """Сектор под точкой.
+
+    Меньший ``priority`` побеждает. На одном уровне у данных X-Plane берётся меньший
+    полигон (затем более высокий нижний край). У yaml и TopLevel остаётся первый
+    подходящий в списке — порядок в ``airspace.yaml`` по-прежнему важен.
+    ``alt_ft is None`` не фильтрует по высоте.
+    """
+    best: Optional[Sector] = None
+    for s in sectors:
+        if not s.covers_alt(alt_ft) or not s.bbox_hits(lat, lon) or not s.contains(lat, lon):
+            continue
+        if best is None or s.priority < best.priority:
+            best = s
+            continue
+        if s.priority != best.priority or s.priority >= 2:
+            continue
+        if (s.area, -s.floor_ft) < (best.area, -best.floor_ft):
+            best = s
+    return best
 
 
 class Airspace:
@@ -195,11 +259,8 @@ class Airspace:
                 best, bd = a, d
         return best, bd
 
-    def sector_at(self, lat: float, lon: float) -> Optional[Sector]:
-        for s in self.sectors:
-            if s.contains(lat, lon):
-                return s
-        return None
+    def sector_at(self, lat: float, lon: float, alt_ft: Optional[float] = None) -> Optional[Sector]:
+        return pick_sector(self.sectors, lat, lon, alt_ft)
 
     def all_units(self) -> List[Unit]:
         out = [u for a in self.airports.values() for u in a.units.values()]

@@ -46,7 +46,8 @@ class FlightPlanProvider:
         self.mode = str(imp["source"]).lower()
         self.side = int(imp["fmc_side"] or 1)
         self.poll_s = float(imp["poll_s"])
-        self.xplane_path = str(imp.get("xplane_path") or "")
+        from ..xplane_install import fms_configured_path
+        self.xplane_path = fms_configured_path(cfg)
         self.max_age_h = float(imp["fms_max_age_h"] or 0)
         sim = cfg.get("sim", {})
         self.use_webapi = self.mode in ("auto", "fmc") and sim.get("source") == "webapi"

@@ -27,6 +27,7 @@ FALLBACK = {
     "tower": ["tower", "radar", "approach"],
     "radar": ["radar", "approach"],
     "approach": ["approach", "radar"],
+    "departure": ["departure", "radar", "approach"],
 }
 
 GROUND_DEP_PHASES = {Phase.PARKED, Phase.PUSHBACK, Phase.STARTUP, Phase.TAXI_OUT, Phase.LINEUP}
@@ -104,6 +105,11 @@ class Controller:
         self.sim: SimState = SimState()
         self.plan: Optional[FlightPlan] = None         # план из FMC/.fms (None — только config.yaml)
         self.airlines: Dict[str, str] = dict(cfg.get("airlines") or {})
+        self.nav = None                                 # кэш навигации X-Plane, если собран
+        self.nav_radius_km = float((cfg.get("navdata") or {}).get("corridor_km") or 50)
+        self.nearby = None
+        self._nav_t = -1e9
+        self._nav_key = None
 
     # ------------------------------------------------------------------ план полёта (FMC Zibo / .fms)
     def _plan_for(self, icao: str) -> Optional[FlightPlan]:
@@ -148,8 +154,25 @@ class Controller:
         return f"{{proc:{name}}}" if _re.fullmatch(r"[A-Z]{2,5}\d[A-Z]?", name or "") else name
 
     def _make_airport(self, icao: str, pos, rwy: str) -> Optional[Airport]:
-        """Аэродром, которого нет в data/airports.yaml: минимальная запись по координатам из .fms
-        (все органы подменяет РЦ сектора). Без координат и ВПП — не создаём."""
+        """Аэродром, которого нет в data/airports.yaml.
+
+        Сначала apt.dat из кэша X-Plane (частоты и ВПП). Если кэша нет — минимальная
+        запись по координатам из .fms, и только когда точку накрывает сектор.
+        """
+        nav = getattr(self, "nav", None)
+        if nav is not None:
+            from .navdata.overlay import airport_from_cache, norm_rwy
+            built = airport_from_cache(nav, icao)
+            if built is not None:
+                if rwy and built.runway(norm_rwy(rwy)) is None and built.runway(rwy) is None:
+                    try:
+                        hdg = (int(str(rwy)[:2]) * 10) % 360 or 360
+                    except ValueError:
+                        hdg = 0.0
+                    built.runways.append(Runway(str(rwy), float(hdg)))
+                if built.units or self.airspace.sector_at(built.lat, built.lon):
+                    self.airspace.airports[icao] = built
+                    return built
         if not pos or not rwy:
             return None
         lat, lon = pos[0], pos[1]
@@ -256,11 +279,12 @@ class Controller:
         raise RuntimeError(f"Нет ни одного органа ОВД для {ap.icao}")
 
     def sector_unit(self, s: SimState) -> Optional[Unit]:
-        sec = self.airspace.sector_at(s.lat, s.lon)
+        sec = self.airspace.sector_at(s.lat, s.lon, s.alt_msl_ft)
         return sec.unit() if sec else None
 
     def dep_terminal_unit(self) -> Optional[Unit]:
-        return self.dep.unit("radar") or self.dep.unit("approach")
+        # Выход (DEP из apt.dat), если данные его дали; иначе Круг, затем Подход.
+        return self.dep.unit("departure") or self.dep.unit("radar") or self.dep.unit("approach")
 
     def arr_terminal_units(self) -> List[Unit]:
         return [u for u in (self.arr.unit("approach"), self.arr.unit("radar")) if u]
@@ -367,7 +391,7 @@ class Controller:
             for c in cands:
                 if self.same_unit(c, pref):
                     return c
-        sec = self.airspace.sector_at(s.lat, s.lon)
+        sec = self.airspace.sector_at(s.lat, s.lon, s.alt_msl_ft)
         relevant_ap = self.dep.icao if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB) else self.arr.icao
         for c in cands:
             if c.airport == relevant_ap:
@@ -844,8 +868,46 @@ class Controller:
             return False
         return (not self.strict_freq) or abs(s.com1_khz - unit.khz) <= 3
 
+    def _route_points(self, s: SimState) -> Tuple[List[Tuple[float, float]], List[str]]:
+        points = [(s.lat, s.lon), (self.dep.lat, self.dep.lon), (self.arr.lat, self.arr.lon)]
+        icaos = [self.dep.icao, self.arr.icao]
+        raw = (self.cfg.get("flight_plan") or {}).get("alternates") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        for icao in raw:
+            code = str(icao).strip().upper()
+            if not code:
+                continue
+            icaos.append(code)
+            ap = self.airspace.airports.get(code)
+            if ap:
+                points.append((ap.lat, ap.lon))
+        if self.plan:
+            icaos.extend([self.plan.origin, self.plan.dest])
+            points.extend((w.lat, w.lon) for w in self.plan.waypoints if w.has_pos)
+        return points, icaos
+
+    def _refresh_nearby(self, s: SimState) -> None:
+        nav = getattr(self, "nav", None)
+        if nav is None:
+            return
+        key = None
+        if self.plan:
+            key = (self.plan.origin, self.plan.dest, tuple(w.ident for w in self.plan.waypoints))
+        if self._nav_key == key and s.t - self._nav_t < 60:
+            return
+        points, icaos = self._route_points(s)
+        try:
+            self.nearby = nav.corridor(points, float(self.nav_radius_km or 50), icaos)
+        except Exception:
+            log.exception("коридор навигации")
+            return
+        self._nav_t = s.t
+        self._nav_key = key
+
     def _proactive(self, s: SimState) -> List[Optional[Event]]:
         out: List[Optional[Event]] = []
+        self._refresh_nearby(s)
         ph = self.phase
         ctrl = self.controlling
         # напоминание о readback
@@ -883,7 +945,7 @@ class Controller:
         if ctrl.type == "control" and not s.on_ground:
             d_arr = self.arr.distance_km(s.lat, s.lon)
             # смена сектора РЦ (Москва -> Санкт-Петербург и т.п.)
-            sec = self.airspace.sector_at(s.lat, s.lon)
+            sec = self.airspace.sector_at(s.lat, s.lon, s.alt_msl_ft)
             if sec and sec.id != ctrl.sector_id and abs(sec.unit().khz - ctrl.khz) > 3:
                 nxt = sec.unit()
                 if not self.same_unit(self.handoff_to, nxt):
@@ -1066,4 +1128,5 @@ class Controller:
             "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
             "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
             "ctrl_type": self.controlling.type if self.controlling else "",
+            "nav": self.nearby.summary() if self.nearby is not None and self.nearby.summary() else "",
         }

@@ -6,8 +6,6 @@ Zibo: RTE стр.1 -> имя в блокнот -> SAVE ROUTE (RSK3) записы
 """
 from __future__ import annotations
 
-import os
-import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -85,60 +83,25 @@ def parse_fms(text: str, source: str = SRC) -> FlightPlan:
 
 
 def guess_xplane_paths() -> List[Path]:
-    """Возможные папки X-Plane 12. ПРЕДПОЛОЖЕНИЕ: установщик X-Plane пишет список установок
-    в %LOCALAPPDATA%\\x-plane_install_12.txt (Windows) / ~/.x-plane/x-plane_install_12.txt."""
-    out: List[Path] = []
-    cands = []
-    if sys.platform.startswith("win"):
-        la = os.environ.get("LOCALAPPDATA")
-        if la:
-            cands.append(Path(la) / "x-plane_install_12.txt")
-    cands.append(Path.home() / ".x-plane" / "x-plane_install_12.txt")
-    cands.append(Path.home() / "Library" / "Preferences" / "x-plane_install_12.txt")
-    for c in cands:
-        try:
-            for ln in c.read_text(encoding="utf-8", errors="replace").splitlines():
-                ln = ln.strip()
-                if ln:
-                    out.append(Path(ln))
-        except OSError:
-            pass
-    for p in ("C:/X-Plane 12", "D:/X-Plane 12", "E:/X-Plane 12",
-              "C:/Program Files (x86)/Steam/steamapps/common/X-Plane 12",
-              "D:/SteamLibrary/steamapps/common/X-Plane 12"):
-        out.append(Path(p))
-    seen, res = set(), []
-    for p in out:
-        k = str(p).lower()
-        if k not in seen:
-            seen.add(k)
-            res.append(p)
-    return res
+    """Возможные папки X-Plane 12: список установок, Steam, типичные диски."""
+    from ..xplane_install import candidate_roots
+    return candidate_roots()
 
 
 def fms_dir_missing_message(xplane_path: str = "") -> str:
     """Пояснение, если Output/FMS plans не найдена: какой путь смотрели и куда писать настройку."""
-    if xplane_path:
-        tried = str(Path(xplane_path) / "Output" / "FMS plans")
-        where = f"проверен путь {tried}"
-    else:
-        cands = [str(p / "Output" / "FMS plans") for p in guess_xplane_paths()[:6]]
-        where = ("автопоиск, проверены: " + "; ".join(cands)) if cands else "автопоиск ничего не дал"
-    return (f"папка Output/FMS plans не найдена ({where}). "
-            "Укажите flight_plan_import.xplane_path в config.yaml — папка установки X-Plane 12, "
-            "например \"D:/X-Plane 12\" (внутри неё должна быть Output/FMS plans), "
-            "или запустите python tools/fmcdump.py --xplane \"D:/X-Plane 12\".")
+    from ..xplane_install import explain_fms_miss
+    return explain_fms_miss(xplane_path)
 
 
 def fms_dir(xplane_path: str = "") -> Optional[Path]:
     """Папка Output/FMS plans: из настройки или автопоиском. None — не найдена."""
-    paths = [Path(xplane_path)] if xplane_path else guess_xplane_paths()
-    for p in paths:
-        if p.name.lower() == "fms plans" and p.is_dir():
-            return p
-        d = p / "Output" / "FMS plans"
-        if d.is_dir():
-            return d
+    from ..xplane_install import candidate_roots, clean_path, fms_plans_dir
+    paths = [clean_path(xplane_path)] if xplane_path else candidate_roots()
+    for path in paths:
+        found = fms_plans_dir(path)
+        if found is not None:
+            return found
     return None
 
 
