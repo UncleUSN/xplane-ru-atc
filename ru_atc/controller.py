@@ -947,6 +947,42 @@ class Controller:
         ap = self._airport_on_atis(s) or self._atis_context(unit)
         return self._play_atis(ap, s, force=True)
 
+    def _weather_airport(self, msg: ParsedMessage, _s: SimState) -> Optional[Airport]:
+        import re
+        norm = msg.norm
+        if re.search(r"назначен|прилет", norm):
+            return self.arr
+        if re.search(r"вылет\w*|отправлен", norm):
+            return self.dep
+        found = None
+        for ap in self.airspace.airports.values():
+            for name in (ap.name, ap.name_gen):
+                token = (name or "").lower().replace("ё", "е")
+                if len(token) >= 4 and re.search(rf"\b{re.escape(token)}\b", norm):
+                    found = ap
+            if re.search(rf"\b{ap.icao.lower()}\b", norm):
+                found = ap
+        return found or self._atis_context(None)
+
+    def _h_request_weather(self, msg, s, unit):
+        ap = self._weather_airport(msg, s)
+        if ap is None:
+            return self.tx(unit, "{cs}, погоду этого аэродрома не вижу", s, decorate=False)
+        wx = self._weather_at(ap, s)
+        if not wx.usable():
+            return self.tx(unit, f"{{cs}}, фактической погоды {ap.name} нет", s, decorate=False)
+        note = ""
+        if wx.source == "sim" and ap.distance_km(s.lat, s.lon) > 30:
+            note = "Сводки аэродрома нет, это погода у самолёта"
+        disp, speech = render_broadcast(
+            ap, wx, "", self._runway_for_atis(ap, s), remarks=note, mode="weather")
+        cs_d, cs_s = self.r.render("{cs}")
+        who = unit.callsign
+        t = Transmission(unit, f"{cs_d}, {who}, {disp}", f"{cs_s}, {who}, {speech}", s.t, "atc")
+        self.last_tx = t
+        self.events_log.append(t)
+        return t
+
     def _h_atis_ack(self, msg, s, unit):
         ap = self._airport_on_atis(s) or self._atis_context(unit)
         got = self._atis_letter(s, ap) if ap else None

@@ -165,11 +165,18 @@ def _cloud_speech(layer: CloudLayer) -> str:
 
 
 def render_broadcast(airport: Airport, weather: Weather, letter: str, runway: str,
-                     remarks: str = "") -> Tuple[str, str]:
-    """Текст на экран и текст для Silero. В речи нет голых цифр."""
+                     remarks: str = "", mode: str = "atis") -> Tuple[str, str]:
+    """Текст на экран и текст для Silero. В речи нет голых цифр.
+
+    ``mode="weather"`` — короткий ответ диспетчера на «сообщите погоду», без буквы АТИС.
+    """
     name = airport.name or airport.icao
-    disp = [f"{name}, АТИС, информация {letter}."]
-    speech = [f"{name}, атис, информация {letter.lower()}."]
+    if mode == "weather":
+        disp = [f"Фактическая погода {name}."]
+        speech = [f"Фактическая погода {name}."]
+    else:
+        disp = [f"{name}, АТИС, информация {letter}."]
+        speech = [f"{name}, атис, информация {letter.lower()}."]
     if runway:
         disp.append(f"Рабочая ВПП {runway}.")
         speech.append(f"Рабочая вэ пэ пэ {runway_to_words(runway)}.")
@@ -227,6 +234,7 @@ def render_broadcast(airport: Airport, weather: Weather, letter: str, runway: st
         note = "Погода по данным симулятора." if weather.source == "sim" else "Погода по сводке METAR."
         disp.append(note)
         speech.append(note)
-    disp.append(f"Подтвердите получение информации {letter}.")
-    speech.append(f"Подтвердите получение информации {letter.lower()}.")
+    if mode != "weather":
+        disp.append(f"Подтвердите получение информации {letter}.")
+        speech.append(f"Подтвердите получение информации {letter.lower()}.")
     return " ".join(disp), " ".join(speech)
