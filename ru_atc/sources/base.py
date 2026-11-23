@@ -91,6 +91,11 @@ class DataSource:
     def is_connected(self) -> bool:
         return self.last_update > 0 and time.monotonic() - self.last_update <= 5.0
 
+    def tune_com1(self, khz: int) -> tuple:
+        """Поставить частоту на COM1. (успех, короткая строка для журнала)."""
+        from ..radio import idle_tune
+        return idle_tune(khz)
+
     def raw(self) -> Dict[str, float]:
         with self._lock:
             return dict(self._raw)

@@ -19,6 +19,7 @@ from .phraseology.courtesy import (
 from .phraseology.callsign import extract_callsign
 from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
+from .radio import parse_auto_tune
 from .flightplan.model import FlightPlan
 
 log = logging.getLogger(__name__)
@@ -121,6 +122,8 @@ class Controller:
         self._nav_t = -1e9
         self._nav_key = None
         self.chattiness = normalize_chattiness((cfg.get("atc") or {}).get("chattiness", "normal"))
+        self.auto_tune_com1 = parse_auto_tune((cfg.get("radio") or {}).get("auto_tune_com1", False))
+        self._tune_khz: Optional[int] = None
         # Отдельный поток: код ответчика по-прежнему берётся из self.rng.
         self.talk = random.Random()
         self.talk.setstate(self.rng.getstate())
@@ -370,6 +373,19 @@ class Controller:
     def handoff_template(self, unit: Unit) -> str:
         return f"работайте с {unit.callsign} {{freq:{unit.freq}}}"
 
+    def _set_handoff(self, unit: Optional[Unit]) -> None:
+        self.handoff_to = unit
+        if unit is not None and self.auto_tune_com1:
+            khz = int(unit.khz)
+            if khz > 0:
+                self._tune_khz = khz
+
+    def take_tune(self) -> Optional[int]:
+        """Частота COM1, которую надо поставить после передачи. Один раз."""
+        khz = self._tune_khz
+        self._tune_khz = None
+        return khz
+
     def set_cleared(self, c: Clearance) -> None:
         self.cleared = c
 
@@ -516,41 +532,59 @@ class Controller:
                     and "wilco" not in msg.intents and not msg.slots and "на связи" not in msg.norm \
                     and not self._pure_courtesy(msg, unit):
                 msg.intent = "unknown"
-            # Пилот вышел на связь с органом, куда его передали
-            if self.handoff_to and self.same_unit(unit, self.handoff_to):
-                self.controlling = unit
-                self.handoff_to = None
-            elif self.controlling is None:
-                self.controlling = unit
-
-            # 1) readback
+            # 1) readback. Ключи считаем до смены органа: автонастройка COM1
+            # уже могла перенести пилота на новую частоту, а повтор ещё за старым.
             rel_keys = {"level": ("level", "target_level"), "alt_ft": ("alt_ft", "target_alt_ft"),
                         "squawk": ("squawk",), "freq": ("freq",), "runway": ("runway",), "qnh": ("qnh",)}
             has_rel = bool(self.pending) and any(
                 k in msg.slots for pk in self.pending.items for k in rel_keys.get(pk, ()))
+            looks_readback = (
+                msg.intent in ("readback", "wilco", "unknown")
+                or "wilco" in msg.intents
+                or (has_rel and not str(msg.intent).startswith("request_"))
+            )
+            tuned_during_readback = bool(
+                self.auto_tune_com1 and self.pending and self.handoff_to and unit is not None
+                and looks_readback and self.same_unit(unit, self.handoff_to)
+                and not self.same_unit(self.pending.unit, unit)
+            )
+            readback_unit = self.pending.unit if tuned_during_readback else unit
+            # Пилот вышел на связь с органом, куда его передали.
+            # Пока он повторяет частоту после автонастройки, передачу не закрываем.
+            if self.handoff_to and unit is not None and self.same_unit(unit, self.handoff_to) \
+                    and not tuned_during_readback:
+                self.controlling = unit
+                self._set_handoff(None)
+            elif self.controlling is None:
+                self.controlling = unit
+
+            def _arrive_after_tune() -> None:
+                if tuned_during_readback and self.pending is None and unit is not None:
+                    self.controlling = unit
+                    self._set_handoff(None)
+
             # Одно «добрый день» или «спасибо», пока ждём повтор, не считается ошибкой
             # и не открывает указание заново.
-            if self.pending and self.same_unit(self.pending.unit, unit) and self._pure_courtesy(msg, unit):
-                reply = self._courtesy_reply(msg, s, unit)
+            if self.pending and self.same_unit(self.pending.unit, readback_unit) and self._pure_courtesy(msg, readback_unit):
+                reply = self._courtesy_reply(msg, s, readback_unit)
                 if reply:
                     out.append(reply)
                 return out
-            if self.pending and self.same_unit(self.pending.unit, unit) and (
-                    msg.intent in ("readback", "wilco", "unknown")
-                    or "wilco" in msg.intents
-                    or (has_rel and not msg.intent.startswith("request_"))):
+            if self.pending and self.same_unit(self.pending.unit, readback_unit) and looks_readback:
                 res = self._check_readback(msg, s)
                 if res is not None:
+                    _arrive_after_tune()
                     out.append(res)
                     return out
                 # Голое «понял» закрыло указание без ответной реплики — не проваливаться в «повторите».
                 # Верный readback частоты по-прежнему пропускается дальше (доклад на связи в той же фразе).
                 if self.pending is None:
+                    _arrive_after_tune()
                     return out
             # 2) направить к нужному органу
             if needed and self.strict_freq and not self.same_unit(unit, needed) and unit.type != needed.type:
                 out.append(self.tx(unit, f"{{cs}}, {unit.callsign}, {self.handoff_template(needed)}", s))
-                self.handoff_to = needed
+                self._set_handoff(needed)
                 return out
             handler = getattr(self, f"_h_{msg.intent}", None)
             if handler is None:
@@ -585,7 +619,7 @@ class Controller:
         if after:
             parts.append(after)
         if after_unit:
-            self.handoff_to = after_unit
+            self._set_handoff(after_unit)
         if not parts:
             return None
         return self.tx(unit, "{cs}, " + ", ".join(parts), s)
@@ -651,7 +685,7 @@ class Controller:
         self.pending = None
         parts = [x for x in (items, after) if x]
         if after_unit:
-            self.handoff_to = after_unit
+            self._set_handoff(after_unit)
         if not parts:
             return None
         return self.tx(unit, "{cs}, " + ", ".join(parts), s)
@@ -841,7 +875,7 @@ class Controller:
                f"{{qnh:{self.qnh(s)}}}")
         if not self.same_unit(tower, unit):
             tpl += f", на предварительном {self.handoff_template(tower)}"
-            self.handoff_to = tower
+            self._set_handoff(tower)
         return self.tx(unit, tpl, s, readback={"runway": self.dep_rwy.id, "qnh": self.qnh(s)})
 
     def _h_request_lineup(self, msg, s, unit):
@@ -983,7 +1017,7 @@ class Controller:
         tower = self.unit_of(self.arr, "tower")
         if not self.same_unit(tower, unit):
             self.flags["tower_handoff_arr"] = True
-            self.handoff_to = tower
+            self._set_handoff(tower)
             return self.tx(unit, f"{{cs}}, {self.handoff_template(tower)}", s, readback={"freq": tower.freq})
         return self._h_request_landing(msg, s, unit)
 
@@ -1004,7 +1038,7 @@ class Controller:
         tpl = f"{{cs}}, понял, по схеме ухода набирайте {{alt:{alt}}}"
         if not self.same_unit(nxt, unit):
             tpl += f", {self.handoff_template(nxt)}"
-            self.handoff_to = nxt
+            self._set_handoff(nxt)
         return self.tx(unit, tpl, s, readback={"alt_ft": alt})
 
     def _h_runway_vacated(self, msg, s, unit):
@@ -1012,7 +1046,7 @@ class Controller:
         if self.same_unit(ground, unit):
             return self._h_request_taxi_in(msg, s, unit)
         self.flags["ground_handoff_arr"] = True
-        self.handoff_to = ground
+        self._set_handoff(ground)
         return self.tx(unit, f"{{cs}}, {self.handoff_template(ground)}", s, readback={"freq": ground.freq})
 
     def _h_request_taxi_in(self, msg, s, unit):
@@ -1096,7 +1130,7 @@ class Controller:
             nxt = self.dep_terminal_unit() or self.sector_unit(s)
             if nxt and not self.same_unit(nxt, ctrl):
                 self.flags["dep_handoff"] = True
-                self.handoff_to = nxt
+                self._set_handoff(nxt)
                 out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                 return out
         # Радар/подход вылета -> РЦ
@@ -1107,7 +1141,7 @@ class Controller:
                 nxt = self.sector_unit(s)
                 if nxt:
                     self.flags["acc_handoff"] = True
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
         if ctrl.type == "control" and not s.on_ground:
@@ -1117,7 +1151,7 @@ class Controller:
             if sec and sec.id != ctrl.sector_id and abs(sec.unit().khz - ctrl.khz) > 3:
                 nxt = sec.unit()
                 if not self.same_unit(self.handoff_to, nxt):
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
             # снижение
@@ -1131,7 +1165,7 @@ class Controller:
             if self.flags["descent"] and d_arr < self.arr.approach_radius_km:
                 nxt = terms[0] if terms else self.arr.unit("tower")
                 if nxt and not self.same_unit(self.handoff_to, nxt):
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
                 if nxt is None and not self.flags["approach"] and d_arr < 40:
@@ -1145,7 +1179,7 @@ class Controller:
             if len(terms) == 2 and self.same_unit(ctrl, terms[0]) and d_arr < self.arr.radar_radius_km:
                 nxt = terms[1]
                 if not self.same_unit(self.handoff_to, nxt):
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
             last = self.same_unit(ctrl, terms[-1]) if terms else False
@@ -1161,7 +1195,7 @@ class Controller:
                         tower = self.arr.unit("tower")
                         if tower:
                             self.flags["tower_handoff_arr"] = True
-                            self.handoff_to = tower
+                            self._set_handoff(tower)
                             out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(tower)}", s,
                                                  readback={"freq": tower.freq}))
                             return out
@@ -1173,7 +1207,7 @@ class Controller:
                 ground = self.arr.unit("ground")
                 if ground:
                     self.flags["ground_handoff_arr"] = True
-                    self.handoff_to = ground
+                    self._set_handoff(ground)
                     out.append(self._pro(ctrl, f"{{cs}}, после освобождения ВПП {self.handoff_template(ground)}", s,
                                          readback={"freq": ground.freq}))
                     return out

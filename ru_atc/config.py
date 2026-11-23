@@ -39,6 +39,8 @@ DEFAULTS: Dict[str, Any] = {
     "sim": {"source": "webapi", "host": "localhost", "webapi_port": 8086, "webapi_version": "auto",
             "udp_port": 49000, "udp_listen_port": 49010, "use_zibo_datarefs": True,
             "mock_time_scale": 4.0},
+    # Выключено: пилот сам ставит частоту, диспетчер проверяет активный COM1.
+    "radio": {"auto_tune_com1": False},
     "atc": {"strict_frequency": True, "confirm_correct_readback": True,
             "readback_strictness": "lenient", "readback_timeout_s": 20,
             "levels_digit_by_digit": False, "auto_descent": True, "speed_limit_kt": 250,

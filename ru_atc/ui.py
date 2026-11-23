@@ -97,6 +97,9 @@ def run_tk(app):
     top_var = tk.BooleanVar(value=bool(ui_cfg.get("always_on_top", True)))
     tk.Checkbutton(bottom, text="Поверх всех", variable=top_var, bg=bg, fg=fg, selectcolor="#2d2d2d",
                    activebackground=bg, command=lambda: win.set_topmost(top_var.get())).pack(side="left", padx=4)
+    tune_var = tk.BooleanVar(value=bool((app.cfg.get("radio") or {}).get("auto_tune_com1", False)))
+    tk.Checkbutton(bottom, text="Авто COM1", variable=tune_var, bg=bg, fg=fg, selectcolor="#2d2d2d",
+                   activebackground=bg, command=lambda: app.set_auto_tune(tune_var.get())).pack(side="left", padx=4)
     tk.Button(bottom, text="Компактно", command=lambda: win.toggle_compact()).pack(side="left", padx=4)
 
     # ------------------------------------------------------------ компактная панель

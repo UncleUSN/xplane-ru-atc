@@ -183,11 +183,30 @@ class App:
         self.pilot_says(text)
 
     # ---------- обмен ----------
+    def set_auto_tune(self, enabled: bool) -> None:
+        """Переключатель окна. В config.yaml само не пишется: ключ задаёт старт."""
+        on = bool(enabled)
+        self.cfg.setdefault("radio", {})["auto_tune_com1"] = on
+        self.ctl.auto_tune_com1 = on
+
     def pilot_says(self, text: str):
         with self.lock:
             s = self.source.snapshot()
             evs = self.ctl.on_pilot(text, s)
         self._dispatch(evs)
+        self._apply_tune()
+
+    def _apply_tune(self) -> None:
+        khz = self.ctl.take_tune()
+        if not khz:
+            return
+        try:
+            ok, note = self.source.tune_com1(int(khz))
+        except Exception as e:
+            log.exception("COM1")
+            ok, note = False, f"COM1 не перестроен: {e}"
+        log.info("COM1 автонастройка %s: %s", "ок" if ok else "нет", note)
+        self.ui_q.put(("info" if ok else "hint_text", note))
 
     def _dispatch(self, evs: List):
         for e in evs:
@@ -209,6 +228,7 @@ class App:
                 s = self.source.snapshot()
                 evs = self.ctl.update(s)
             self._dispatch(evs)
+            self._apply_tune()
             if self.pilot_bot is not None and not (self.speaker and self.speaker.busy):
                 for txt in self.pilot_bot.step(s):
                     self.pilot_says(txt)
