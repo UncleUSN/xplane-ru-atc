@@ -199,7 +199,10 @@ def run_tk(app):
                     c_ptt.configure(fg="#f44" if p else "#444")
                 elif kind == "state":
                     s, st, err = p
-                    vars_["phase"].set(f"{st['phase']} — {PHASE_RU.get(Phase(st['phase']), '')}")
+                    phase_name = f"{st['phase']} — {PHASE_RU.get(Phase(st['phase']), '')}"
+                    if st.get("emergency"):
+                        phase_name += f" | {st['emergency']}"
+                    vars_["phase"].set(phase_name)
                     vars_["callsign"].set(st.get("callsign", "-"))
                     vars_["atis"].set(st.get("atis", "-"))
                     vars_["conn"].set("OK" if s.connected else f"нет данных {('— ' + err) if err else ''}"[:60])
@@ -216,7 +219,8 @@ def run_tk(app):
                     if st.get("nav"):
                         nav_var.set(st["nav"])
                         c_nav.set(st["nav"][:90])
-                    c_state.set(f"{st.get('callsign', '-')} | {st['phase']} | {st['controlling']} | "
+                    emerg = f" | {st['emergency']}" if st.get("emergency") else ""
+                    c_state.set(f"{st.get('callsign', '-')} | {st['phase']}{emerg} | {st['controlling']} | "
                                 f"{st['cleared']} | SQ {st['squawk']}"
                                 + ("" if s.connected else " | нет связи с X-Plane"))
                     c_plan.set("План: " + st.get("plan", "-"))

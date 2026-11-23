@@ -7,7 +7,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
-from .airspace import Airport, Airspace, Runway, Unit, angle_diff, haversine_km
+from .airspace import Airport, Airspace, Runway, Unit, angle_diff, bearing_deg, haversine_km
 from .events import Hint, PilotMessage, Transmission
 from .model import SimState
 from .phases import Phase, PhaseTracker
@@ -126,6 +126,8 @@ class Controller:
         self.chattiness = normalize_chattiness((cfg.get("atc") or {}).get("chattiness", "normal"))
         self.auto_tune_com1 = parse_auto_tune((cfg.get("radio") or {}).get("auto_tune_com1", False))
         self._tune_khz: Optional[int] = None
+        self.emergency: Optional[str] = None       # mayday | pan | radio
+        self.emergency_source = ""                  # voice | squawk
         self.atis_board = AtisBoard()
         self.atis_ack: Dict[str, int] = {}
         self._atis_mismatch = ""
@@ -474,7 +476,7 @@ class Controller:
             self._atis_mismatch = f"информация {current}, не {shown}"
 
     def _append_atis(self, unit: Unit, template: str, s: SimState) -> str:
-        if any(word in template for word in self._SKIP_ATIS):
+        if self.emergency or any(word in template for word in self._SKIP_ATIS):
             return template
         if self._atis_mismatch:
             text = ", " + self._atis_mismatch
@@ -670,6 +672,8 @@ class Controller:
         self._pilot_thanks = bool(msg.thanks)
         self._pilot_goodbye = bool(msg.goodbye)
         try:
+            if unit is None and msg.intent in ("emergency_mayday", "emergency_pan", "emergency_cancel"):
+                unit = self._emergency_unit(s)
             if unit is None:
                 atis_ap = self._airport_on_atis(s)
                 if atis_ap and (msg.intent in ("request_atis", "atis_ack", "check_in")
@@ -681,6 +685,12 @@ class Controller:
                                          f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
                     return out
             self._observe_atis_report(msg, s, unit)
+            if msg.intent in ("emergency_mayday", "emergency_pan", "emergency_cancel") or (
+                    self.emergency and self._emergency_report(msg)):
+                res = self._handle_emergency(msg, s, unit)
+                if res:
+                    out.append(res)
+                return out
             # «спасибо» не прячет посторонние слова: иначе мусор не дойдёт до readback.
             if (msg.greet or msg.farewell) and msg.intent in ("farewell", "check_in") \
                     and "wilco" not in msg.intents and not msg.slots and "на связи" not in msg.norm \
@@ -891,7 +901,7 @@ class Controller:
         return "понял" in template or "правильно" in template
 
     def _decorate(self, unit: Unit, template: str, s: SimState, kind: str) -> str:
-        if kind != "atc" or self.chattiness == "off":
+        if self.emergency or kind != "atc" or self.chattiness == "off":
             return template
         if any(word in template for word in self._NO_COURTESY):
             return template
@@ -982,6 +992,110 @@ class Controller:
         self.last_tx = t
         self.events_log.append(t)
         return t
+
+    def _emergency_unit(self, s: SimState) -> Optional[Unit]:
+        if self.controlling and self.controlling.type != "atis":
+            return self.controlling
+        sec = self.sector_unit(s)
+        if sec:
+            return sec
+        for kind in ("tower", "approach", "radar", "delivery", "ground"):
+            unit = self.dep.unit(kind)
+            if unit:
+                return unit
+        return None
+
+    def _emergency_report(self, msg: ParsedMessage) -> bool:
+        import re
+        if msg.intent not in ("unknown", "check_in", "readback", "wilco"):
+            return False
+        return bool(re.search(r"на борту|человек|топлив|душ", msg.norm))
+
+    def _nearest_field(self, s: SimState) -> Tuple[Airport, str, int, int]:
+        ap, dist = self.airspace.nearest_airport(s.lat, s.lon)
+        if ap is None:
+            ap, dist = self.dep, self.dep.distance_km(s.lat, s.lon)
+        runway = ""
+        if ap.runways:
+            try:
+                runway = ap.select_runway(s.wind_dir, s.wind_kt, arrival=True).id
+            except Exception:
+                runway = ap.runways[0].id
+        hdg = int(round(bearing_deg(s.lat, s.lon, ap.lat, ap.lon))) % 360 or 360
+        return ap, runway, max(0, int(round(dist))), hdg
+
+    def _emergency_place(self, s: SimState) -> str:
+        _ap, runway, km, hdg = self._nearest_field(s)
+        rwy = f" ВПП {{rwy:{runway}}}," if runway else ""
+        return f"Ближайший подходящий {_ap.name},{rwy} удаление {{km:{km}}}, курс {{hdg:{hdg}}}."
+
+    def _mayday_text(self, s: SimState, from_squawk: bool) -> str:
+        seen = "наблюдаю бедствие, ответчик {sq:7700}. " if from_squawk else "бедствие принял, приоритет ваш. "
+        return ("{cs}, " + seen + "Доложите намерения, количество людей на борту и остаток топлива. "
+                + self._emergency_place(s) + " По готовности ответчик {sq:7700}.")
+
+    def _pan_text(self, s: SimState) -> str:
+        return ("{cs}, срочность принял, приоритет ниже бедствия. "
+                "Доложите намерения, количество людей на борту и остаток топлива. "
+                + self._emergency_place(s) + " При необходимости ответчик {sq:7700}.")
+
+    def _radio_fail_text(self, s: SimState) -> str:
+        return ("{cs}, отказ радиосвязи, ответчик {sq:7600}. Если слышите, продолжайте по последнему разрешению. "
+                + self._emergency_place(s))
+
+    def _handle_emergency(self, msg: ParsedMessage, s: SimState, unit: Unit) -> Optional[Transmission]:
+        if msg.intent == "emergency_cancel":
+            return self._cancel_emergency(s, unit)
+        if msg.intent == "emergency_pan":
+            self.emergency, self.emergency_source = "pan", "voice"
+            self.pending = None
+            return self.tx(unit, self._pan_text(s), s, decorate=False)
+        if msg.intent == "emergency_mayday":
+            self.emergency, self.emergency_source = "mayday", "voice"
+            self.pending = None
+            return self.tx(unit, self._mayday_text(s, from_squawk=False), s, decorate=False)
+        return self.tx(unit, "{cs}, понял, приоритет сохранён. Доложите намерения.", s, decorate=False)
+
+    def _cancel_emergency(self, s: SimState, unit: Unit) -> Transmission:
+        kind = self.emergency
+        self.emergency = None
+        self.emergency_source = ""
+        if not kind:
+            return self.tx(unit, "{cs}, бедствие не объявлялось", s, decorate=False)
+        name = {"mayday": "бедствие", "pan": "срочность", "radio": "отказ радиосвязи"}.get(kind, "бедствие")
+        tail = ""
+        if f"{s.xpdr_code:04d}" in ("7700", "7600") and self.squawk:
+            tail = f" Снимите код бедствия, установите ответчик {{sq:{self.squawk}}}."
+        return self.tx(unit, f"{{cs}}, {name} отменено.{tail} Доложите намерения.", s, decorate=False)
+
+    def _squawk_emergency(self, s: SimState, ctrl: Optional[Unit], speak_ok: bool) -> List[Event]:
+        code = f"{s.xpdr_code:04d}"
+        out: List[Event] = []
+        if code == "7700" and self.emergency != "mayday":
+            self.emergency, self.emergency_source = "mayday", "squawk"
+            self.pending = None
+            if speak_ok and ctrl is not None:
+                out.append(self.tx(ctrl, self._mayday_text(s, from_squawk=True), s, decorate=False))
+            else:
+                hinted = self.hint("mayday", "Ответчик 7700 — бедствие", s, cooldown=30)
+                if hinted:
+                    out.append(hinted)
+        elif code == "7600" and self.emergency not in ("radio", "mayday"):
+            self.emergency, self.emergency_source = "radio", "squawk"
+            self.pending = None
+            if speak_ok and ctrl is not None:
+                out.append(self.tx(ctrl, self._radio_fail_text(s), s, decorate=False))
+            else:
+                hinted = self.hint("radio_fail", "Ответчик 7600 — отказ радиосвязи", s, cooldown=30)
+                if hinted:
+                    out.append(hinted)
+        elif self.emergency_source == "squawk" and code not in ("7700", "7600"):
+            self.emergency = None
+            self.emergency_source = ""
+            hinted = self.hint("emergency_clear", "Код бедствия снят", s, cooldown=5)
+            if hinted:
+                out.append(hinted)
+        return out
 
     def _h_atis_ack(self, msg, s, unit):
         ap = self._airport_on_atis(s) or self._atis_context(unit)
@@ -1448,6 +1562,7 @@ class Controller:
             out.append(self.hint("gear", "ШАССИ НЕ ВЫПУЩЕНО ниже 1500 ft AGL!", s, cooldown=30))
 
         # --- ответчик ---
+        out.extend(self._squawk_emergency(s, ctrl, speak_ok))
         airborne = not s.on_ground and ph in AIRBORNE_PHASES
         alt_rep = s.xpdr_alt_reporting
         if self._held("xpdr_mode", airborne and not alt_rep, s.t, 30):
@@ -1455,8 +1570,10 @@ class Controller:
                 out.append(self.tx(ctrl, "{cs}, ответчик не наблюдаю, проверьте режим ответчика", s, kind="warning"))
             else:
                 out.append(self.hint("xpdr_mode", "Ответчик не в режиме ALT/TA/RA", s))
-        if self.squawk and self.pending is None and (airborne or ph in (Phase.TAXI_OUT, Phase.LINEUP)):
-            if self._held("xpdr_code", f"{s.xpdr_code:04d}" != self.squawk, s.t, 25):
+        code_now = f"{s.xpdr_code:04d}"
+        if self.squawk and self.pending is None and not self.emergency and code_now not in ("7700", "7600") \
+                and (airborne or ph in (Phase.TAXI_OUT, Phase.LINEUP)):
+            if self._held("xpdr_code", code_now != self.squawk, s.t, 25):
                 if speak_ok and airborne and self.cooldown_ok("xpdr_code_v", s, 120):
                     out.append(self.tx(ctrl, f"{{cs}}, проверьте код ответчика, установите {{sq:{self.squawk}}}", s, kind="warning"))
                 else:
@@ -1545,6 +1662,7 @@ class Controller:
             "pending": ", ".join(f"{k}={v}" for k, v in self.pending.items.items()) if self.pending else "-",
             "callsign": f"{self.r.callsign} ({self._callsign_origin()})",
             "atis": self._atis_status(),
+            "emergency": {"mayday": "БЕДСТВИЕ", "pan": "СРОЧНОСТЬ", "radio": "ОТКАЗ РАДИО"}.get(self.emergency or "", ""),
             "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
             "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
             "ctrl_type": self.controlling.type if self.controlling else "",
