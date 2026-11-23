@@ -294,7 +294,7 @@ begin
   if not FileExists(ExpandConstant('{app}\config.yaml')) then
   begin
     ExtractTemporaryFile(CfgName);
-    if not FileCopy(ExpandConstant('{tmp}\') + CfgName, ExpandConstant('{app}\config.yaml'), False) then
+    if not CopyFile(ExpandConstant('{tmp}\') + CfgName, ExpandConstant('{app}\config.yaml'), False) then
       MsgBox('Не удалось записать config.yaml. Скопируйте config.example.yaml и поправьте модель и голос вручную.', mbError, MB_OK);
   end
   else
