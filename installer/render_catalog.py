@@ -99,6 +99,12 @@ def build(out_dir: Path | None = None) -> dict:
 
 
 def main() -> None:
+    # На бегуне Windows консоль часто cp1252, и русский print роняет скрипт.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
     files = build(OUT)
     print(f"Записано {len(files)} файлов в {OUT}")
 

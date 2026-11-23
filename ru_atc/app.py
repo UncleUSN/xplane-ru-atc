@@ -249,6 +249,97 @@ class App:
             nav.close()
 
 
+def smoke_check() -> int:
+    """Импорт тяжёлых библиотек собранного exe. Код 0 — всё открылось.
+
+    Окно у сборки без консоли, stdout может быть None, поэтому отчёт ещё
+    пишется в RU_ATC_SMOKE_REPORT (его задаёт installer/build.ps1).
+    """
+    import os
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    lines: List[str] = []
+    rc = 0
+
+    def ok(text: str) -> None:
+        lines.append(f"ок {text}")
+
+    def fail(text: str) -> None:
+        nonlocal rc
+        rc = 1
+        lines.append(f"ошибка {text}")
+
+    modules = (
+        "yaml",
+        "numpy",
+        "sounddevice",
+        "_sounddevice",
+        "_sounddevice_data",
+        "vosk",
+        "torch",
+        "omegaconf",
+        "scipy.signal",
+        "keyboard",
+        "pygame",
+        "pyttsx3",
+        "tkinter",
+    )
+    for name in modules:
+        try:
+            __import__(name)
+        except Exception as exc:
+            fail(f"{name}: {type(exc).__name__}: {exc}")
+        else:
+            ok(name)
+    try:
+        import sounddevice as sd
+        version = sd.get_portaudio_version()
+        ok(f"portaudio {version[0]} {version[1]}")
+    except Exception as exc:
+        fail(f"portaudio: {type(exc).__name__}: {exc}")
+    try:
+        from .avatars import avatar_file
+        for gender in ("female", "male"):
+            path = avatar_file(gender)
+            if path is None:
+                fail(f"портрет {gender}")
+            else:
+                ok(f"портрет {path.name}")
+    except Exception as exc:
+        fail(f"портрет: {type(exc).__name__}: {exc}")
+    if getattr(sys, "frozen", False):
+        from .config import app_root
+        root = app_root()
+        expected = Path(sys.executable).resolve().parent
+        if root != expected:
+            fail(f"app_root {root} (ожидался каталог exe {expected})")
+        else:
+            ok(f"app_root {root}")
+        for rel in ("config.example.yaml", "data/airports.yaml", "data/airspace.yaml", "CHANGELOG.md"):
+            path = root / rel
+            if path.is_file():
+                ok(rel)
+            else:
+                fail(f"нет файла {path}")
+    text = "\n".join(lines) + "\n"
+    report = sys.environ.get("RU_ATC_SMOKE_REPORT")
+    if report:
+        try:
+            dest = Path(report)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(text, encoding="utf-8")
+        except Exception as exc:
+            fail(f"отчёт {report}: {exc}")
+            text = "\n".join(lines) + "\n"
+    try:
+        sys.stdout.write(text)
+    except Exception:
+        pass
+    return rc
+
+
 def fmt_state(s, st) -> str:
     return (f"[{st['phase']}] {PHASE_RU.get(__import__('ru_atc.phases', fromlist=['Phase']).Phase(st['phase']), '')} | "
             f"COM1 {s.com1_khz / 1000:.3f} | ALT {s.alt_ind_ft:.0f} ft | IAS {s.ias_kt:.0f} | GS {s.gs_kt:.0f} | "
@@ -297,6 +388,10 @@ def run_console(app: App):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--smoke" in argv:
+        raise SystemExit(smoke_check())
     ap = argparse.ArgumentParser(description="Русскоязычный голосовой диспетчер для X-Plane 12")
     ap.add_argument("-c", "--config", help="путь к config.yaml")
     ap.add_argument("--source", choices=["webapi", "udp", "mock"], help="источник данных")

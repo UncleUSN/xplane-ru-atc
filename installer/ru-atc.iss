@@ -2,7 +2,12 @@
 ; Собирать скриптом installer\build.ps1: он подставляет /DMyAppVersion из ru_atc\__init__.py
 ; и перед компиляцией генерирует installer\generated\ (радиокнопки и config.yaml).
 ; Нужен Inno Setup 6.3 или новее (CreateDownloadPage, x64compatible).
-; Готовый setup.exe в среде подготовки этого выпуска не собирался: там нет Windows.
+;
+; Относительные пути ниже считаются от ЭТОГО файла (каталог installer\), не от корня
+; репозитория и не от текущей папки. Один «..» — это корень:
+;   OutputDir  -> <корень>\dist\installer\RU-ATC-<версия>-setup.exe
+;   Source     -> <корень>\dist\RU-ATC\*
+; Лишний «..» увёл бы вывод на каталог выше репозитория.
 
 #ifndef MyAppVersion
   #error Запустите installer\build.ps1 — он передаёт /DMyAppVersion из ru_atc\__init__.py

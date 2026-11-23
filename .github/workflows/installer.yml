@@ -5,6 +5,9 @@ on:
   push:
     tags:
       - "v*"
+    # Временный прогон сборки этой ветки. Убрать, когда workflow на ней станет зелёным.
+    branches:
+      - cursor/fix-installer-paths-9f47
 
 jobs:
   setup:

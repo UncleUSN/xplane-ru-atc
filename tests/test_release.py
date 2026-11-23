@@ -40,6 +40,40 @@ def test_app_root_is_repo_when_not_frozen():
     assert app_root() == ROOT
 
 
+def test_installer_paths_resolve_to_repo_root():
+    """SPECPATH — каталог installer\\, не файл. Лишний .parent искал скрипт выше репозитория."""
+    from installer.layout import repo_root_from_spec
+
+    assert repo_root_from_spec(ROOT / "installer") == ROOT
+    assert repo_root_from_spec(ROOT / "installer" / "ru_atc.spec") == ROOT
+    with pytest.raises(SystemExit):
+        repo_root_from_spec(ROOT)
+
+    spec = (ROOT / "installer" / "ru_atc.spec").read_text(encoding="utf-8")
+    assert "repo_root_from_spec" in spec
+    assert ".parent.parent" not in spec
+    assert "entrypoint.py" in spec
+    assert "_sounddevice_data" in spec
+    assert "torch.utils.tensorboard" in spec
+    assert 'collect_all("sounddevice")' not in spec
+    assert (ROOT / "installer" / "entrypoint.py").is_file()
+    entry = (ROOT / "installer" / "entrypoint.py").read_text(encoding="utf-8")
+    assert "freeze_support" in entry
+    assert "from ru_atc.app import main" in entry
+
+    ps1 = (ROOT / "installer" / "build.ps1").read_text(encoding="utf-8")
+    assert "Split-Path -Parent $PSScriptRoot" in ps1
+    assert "MyInvocation.MyCommand.Path" not in ps1
+    assert "PYTHONUTF8" in ps1
+    assert "--smoke" in ps1
+    assert "libportaudio64bit.dll" in ps1
+
+    iss = (ROOT / "installer" / "ru-atc.iss").read_text(encoding="utf-8-sig")
+    assert "OutputDir=..\\dist\\installer" in iss
+    assert 'Source: "..\\dist\\RU-ATC\\*"' in iss
+    assert "..\\..\\" not in iss
+
+
 def test_apply_xplane_path_rewrites_both_keys_and_appends_when_missing():
     text = "flight_plan_import:\n  xplane_path: \"\"\nnavdata:\n  xplane_path: \"\"\n# xplane_path: не трогать\n"
     got = apply_xplane_path(text, r"D:\X-Plane 12\\")
