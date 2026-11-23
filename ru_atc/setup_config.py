@@ -14,6 +14,42 @@ from .voice.catalog import (
 )
 
 
+def apply_xplane_path(text: str, xplane_dir: str) -> str:
+    """Прописать папку X-Plane в строки ``xplane_path:``.
+
+    Так же делает ``installer/set_xplane_path.ps1`` в мастере: оба ключа
+    (``flight_plan_import`` и ``navdata``), если они уже есть. Если ключа нет
+    вообще, в конец дописывается только ``navdata.xplane_path``, чтобы не
+    затереть уже существующий блок ``flight_plan_import``.
+    Пустой путь файл не меняет.
+    """
+    directory = (xplane_dir or "").strip().strip('"').strip("'")
+    if not directory:
+        return text
+    directory = directory.replace("\\", "/").rstrip("/")
+    directory = directory.replace('"', "")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    body = text.replace("\r\n", "\n")
+    ends_nl = body.endswith("\n")
+    lines = body.split("\n")
+    changed = False
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*xplane_path\s*:", line):
+            indent = re.match(r"^(\s*)", line).group(1)
+            lines[index] = f'{indent}xplane_path: "{directory}"'
+            changed = True
+    if not changed:
+        extra = f'\nnavdata:\n  xplane_path: "{directory}"\n'
+        if not body.endswith("\n"):
+            extra = "\n" + extra
+        body = body + extra
+        return body.replace("\n", newline) if newline != "\n" else body
+    body = "\n".join(lines)
+    if ends_nl and not body.endswith("\n"):
+        body += "\n"
+    return body.replace("\n", newline) if newline != "\n" else body
+
+
 def render_installed_config(example: str, vosk_id: str, speaker: str) -> str:
     """Подставить выбранные модель и голос в текст config.example.yaml.
 

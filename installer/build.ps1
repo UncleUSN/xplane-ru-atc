@@ -14,7 +14,9 @@ Set-Location $Root
 
 $Version = (python installer\print_version.py).Trim()
 if (-not $Version) { throw "Не удалось прочитать ru_atc/__init__.py" }
-Write-Host "Версия: $Version"
+$VersionInfo = (python installer\print_version.py --quad).Trim()
+if (-not $VersionInfo) { throw "Не удалось собрать числовую версию для Windows" }
+Write-Host "Версия: $Version ($VersionInfo)"
 
 Write-Host "Зависимости сборки (torch CPU, PyInstaller)..."
 python -m pip install --upgrade pip
@@ -53,6 +55,6 @@ if (-not $Iscc) {
 
 Write-Host "Inno Setup: $Iscc"
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "dist\installer") | Out-Null
-& $Iscc "/DMyAppVersion=$Version" (Join-Path $Root "installer\ru-atc.iss")
+& $Iscc "/DMyAppVersion=$Version" "/DMyVersionInfo=$VersionInfo" (Join-Path $Root "installer\ru-atc.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с кодом $LASTEXITCODE" }
 Write-Host "Готово: dist\installer\RU-ATC-$Version-setup.exe"

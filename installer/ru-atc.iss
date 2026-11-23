@@ -16,8 +16,11 @@ AppId={{7E2A9C14-6B0F-4E8A-9D33-1C5F8A2B4D70}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-; Ресурс версии Windows принимает только числа. Строка 0.2b — в AppVersion.
-VersionInfoVersion=0.2.0.0
+; Ресурс версии Windows принимает только числа. Строка 0.3.0-beta остаётся в AppVersion.
+#ifndef MyVersionInfo
+  #define MyVersionInfo "0.3.0.0"
+#endif
+VersionInfoVersion={#MyVersionInfo}
 AppPublisher={#MyAppName}
 DefaultDirName={localappdata}\RU ATC
 DefaultGroupName={#MyAppName}
@@ -42,6 +45,7 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 #include "generated/files.iss"
 Source: "..\dist\RU-ATC\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "extract_model.ps1"; Flags: dontcopy
+Source: "set_xplane_path.ps1"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
@@ -55,11 +59,93 @@ Filename: "{app}\{#MyAppExe}"; Description: "Запустить RU ATC"; Flags: 
 
 var
   DownloadPage: TDownloadWizardPage;
+  XPlanePage: TInputDirWizardPage;
   ModelPage: TWizardPage;
   ModelList: TNewCheckListBox;
   VoskItemIndex: array of Integer;
   SpeakerItemIndex: array of Integer;
   DownloadedVosk: String;
+
+function FirstInstallPath: String;
+var
+  Lines: TArrayOfString;
+  I: Integer;
+  S, Path: String;
+begin
+  Result := '';
+  Path := ExpandConstant('{localappdata}\x-plane_install_12.txt');
+  if not LoadStringsFromFile(Path, Lines) then
+    Exit;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    S := Trim(Lines[I]);
+    if (S = '') or (S = 'I') or (S = 'A') or (Length(S) < 3) then
+      Continue;
+    if (Length(S) <= 6) and (Pos('Version', S) > 0) then
+      Continue;
+    Result := S;
+    Exit;
+  end;
+end;
+
+function HasXPlaneData(Dir: String): Boolean;
+begin
+  Result := DirExists(AddBackslash(Dir) + 'Resources\default data');
+end;
+
+function DetectXPlane: String;
+var
+  Candidates: TArrayOfString;
+  I: Integer;
+  FromList: String;
+begin
+  Result := '';
+  FromList := FirstInstallPath;
+  if (FromList <> '') and HasXPlaneData(FromList) then
+  begin
+    Result := FromList;
+    Exit;
+  end;
+  SetArrayLength(Candidates, 5);
+  Candidates[0] := 'C:\X-Plane 12';
+  Candidates[1] := 'D:\X-Plane 12';
+  Candidates[2] := 'E:\X-Plane 12';
+  Candidates[3] := ExpandConstant('{commonpf32}\Steam\steamapps\common\X-Plane 12');
+  Candidates[4] := 'D:\SteamLibrary\steamapps\common\X-Plane 12';
+  for I := 0 to GetArrayLength(Candidates) - 1 do
+    if HasXPlaneData(Candidates[I]) then
+    begin
+      Result := Candidates[I];
+      Exit;
+    end;
+  { Неподтверждённый путь из списка установок не подставляем: в тихом режиме
+    мастер иначе упрётся в предупреждение и остановится. }
+end;
+
+function ConfirmXPlaneDir(Dir: String): Boolean;
+var
+  Answer: Integer;
+begin
+  Result := True;
+  Dir := Trim(Dir);
+  if Dir = '' then
+  begin
+    Answer := SuppressibleMsgBox(
+      'Папка X-Plane 12 не указана. Частоты и планы FMS программа будет искать сама, ' +
+      'а путь можно дописать в config.yaml (flight_plan_import.xplane_path). Продолжить без папки?',
+      mbConfirmation, MB_YESNO, IDYES);
+    Result := Answer = IDYES;
+    Exit;
+  end;
+  if not HasXPlaneData(Dir) then
+  begin
+    Answer := SuppressibleMsgBox(
+      'В «' + Dir + '» нет папки Resources\default data. Это не похоже на установку X-Plane 12.' + #13#10 +
+      'Всё равно записать этот путь в config.yaml?',
+      mbError, MB_YESNO, IDNO);
+    Result := Answer = IDYES;
+  end;
+end;
 
 function SelectedVosk: Integer;
 var
@@ -98,8 +184,19 @@ begin
     nil);
   DownloadPage.ShowBaseNameInsteadOfUrl := False;
 
-  ModelPage := CreateCustomPage(
+  XPlanePage := CreateInputDirPage(
     wpSelectDir,
+    'Папка X-Plane 12',
+    'Откуда читать навигацию и планы FMC',
+    'Укажите папку, в которой лежит X-Plane.exe. Она запишется в config.yaml ' +
+    '(flight_plan_import.xplane_path и navdata.xplane_path). Потом путь можно поменять в файле. ' +
+    'Если папка нашлась сама, она уже подставлена.',
+    False, '');
+  XPlanePage.Add('Папка установки');
+  XPlanePage.Values[0] := DetectXPlane;
+
+  ModelPage := CreateCustomPage(
+    XPlanePage.ID,
     'Модели речи',
     'В каждой группе можно выбрать только один пункт.');
 
@@ -140,6 +237,11 @@ var
   ZipPath, ModelDir: String;
 begin
   Result := True;
+  if CurPageID = XPlanePage.ID then
+  begin
+    Result := ConfirmXPlaneDir(XPlanePage.Values[0]);
+    Exit;
+  end;
   if CurPageID <> wpReady then
     Exit;
   I := SelectedVosk;
@@ -191,7 +293,21 @@ begin
       MsgBox('Не удалось записать config.yaml. Скопируйте config.example.yaml и поправьте модель и голос вручную.', mbError, MB_OK);
   end
   else
-    Log('config.yaml уже есть — выбор мастера в него не записан');
+    Log('config.yaml уже есть — модель и голос не перезаписаны, путь X-Plane будет обновлён');
+
+  if Trim(XPlanePage.Values[0]) <> '' then
+  begin
+    ExtractTemporaryFile('set_xplane_path.ps1');
+    { Хвостовой слэш перед кавычкой в командной строке Windows съедает кавычку. }
+    Params := Trim(XPlanePage.Values[0]);
+    while (Length(Params) > 3) and ((Params[Length(Params)] = '\') or (Params[Length(Params)] = '/')) do
+      Delete(Params, Length(Params), 1);
+    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\set_xplane_path.ps1') +
+      '" -Config "' + ExpandConstant('{app}\config.yaml') + '" -XPlane "' + Params + '"';
+    if (not Exec('powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, Rc)) or (Rc <> 0) then
+      MsgBox('Не удалось записать папку X-Plane в config.yaml (код ' + IntToStr(Rc) +
+        '). Пропишите flight_plan_import.xplane_path вручную.', mbError, MB_OK);
+  end;
 
   ZipPath := ExpandConstant('{tmp}\vosk-model.zip');
   if FileExists(ZipPath) then

@@ -213,6 +213,23 @@ class App:
             self.ui_q.put(("state", (s, self.ctl.status(), getattr(self.source, "error", None))))
             time.sleep(0.5)
 
+    def _load_navdata(self) -> None:
+        from .navdata.service import prepare_navdata
+
+        def progress(message: str, fraction: float) -> None:
+            self.ui_q.put(("nav_progress", f"{message} ({int(fraction * 100)}%)"))
+
+        try:
+            result = prepare_navdata(self.cfg, progress)
+        except Exception:
+            log.exception("Навигационные данные")
+            self.ui_q.put(("info", "Навигационные данные X-Plane не собраны, остаются yaml."))
+            return
+        with self.lock:
+            notes = result.apply(self.airspace, self.ctl)
+        for note in notes:
+            self.ui_q.put(("info", note))
+
     def start(self):
         self.source.start()
         if self.fp_provider:
@@ -220,12 +237,16 @@ class App:
         self.stop_ev = threading.Event()
         threading.Thread(target=self.loop, args=(self.stop_ev,), daemon=True).start()
         threading.Thread(target=self.init_voice, daemon=True).start()
+        threading.Thread(target=self._load_navdata, name="navdata", daemon=True).start()
 
     def stop(self):
         self.stop_ev.set()
         self.source.stop()
         if self.fp_provider:
             self.fp_provider.stop()
+        nav = getattr(self.ctl, "nav", None)
+        if nav is not None:
+            nav.close()
 
 
 def fmt_state(s, st) -> str:
@@ -250,6 +271,8 @@ def run_console(app: App):
                 print(f"<<< ПИЛОТ: {payload.text}   [{payload.intent}]")
             elif kind == "hint":
                 print(f"  * {payload.text}")
+            elif kind == "nav_progress":
+                print(f"  … {payload}")
             elif kind == "info":
                 print(f"  i {payload}")
             elif kind == "hint_text":
@@ -281,6 +304,8 @@ def main(argv=None):
     ap.add_argument("--console", action="store_true", help="консольный интерфейс вместо окна")
     ap.add_argument("--no-voice", action="store_true", help="без голоса (только текст)")
     ap.add_argument("--compact", action="store_true", help="запустить компактной полупрозрачной панелью")
+    ap.add_argument("--rebuild-nav", action="store_true",
+                    help="пересобрать кэш навигации X-Plane, даже если файлы не менялись")
     ap.add_argument("--dep", help="аэродром вылета (ICAO)")
     ap.add_argument("--arr", help="аэродром назначения (ICAO)")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -296,6 +321,8 @@ def main(argv=None):
         cfg["sim"]["source"] = "mock"
     if a.compact:
         cfg["ui"]["start_compact"] = True
+    if a.rebuild_nav:
+        cfg.setdefault("navdata", {})["rebuild"] = True
     logp = setup_logging(cfg.get("log_dir", "logs"), a.verbose)
     app = App(cfg, demo=a.demo, no_voice=a.no_voice)
     print(f"RU ATC {__version__}")

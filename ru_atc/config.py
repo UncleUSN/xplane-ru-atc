@@ -27,7 +27,10 @@ DEFAULTS: Dict[str, Any] = {
     "callsign": {"spoken": "Аэрофлот", "number": "1234"},
     "flight_plan": {"departure": "UUEE", "arrival": "ULLI", "cruise_fl": 330, "route": "по плану",
                     "sid": "", "star": "", "departure_runway": "", "arrival_runway": "",
-                    "arrival_stand": ""},
+                    "arrival_stand": "", "alternates": []},
+    # xplane — файлы симулятора; navigraph — заглушка (подписка не подключена); off — только yaml.
+    "navdata": {"provider": "xplane", "xplane_path": "", "cache_dir": "",
+                "corridor_km": 50, "rebuild": False},
     "flight_plan_import": {"source": "auto", "fmc_side": 1, "poll_s": 2.0, "xplane_path": "",
                            "fms_max_age_h": 12, "callsign_from_fmc": True},
     "airlines": {"AFL": "Аэрофлот", "SDM": "Россия", "PBD": "Победа", "SBI": "Сибирь", "UTA": "Ютэйр",
@@ -90,6 +93,6 @@ def load_config(path: str | None = None) -> Dict[str, Any]:
     cfg_path = Path(path) if path else app_root() / "config.yaml"
     user: Dict[str, Any] = {}
     if cfg_path.exists():
-        with open(cfg_path, encoding="utf-8") as f:
+        with open(cfg_path, encoding="utf-8-sig") as f:
             user = yaml.safe_load(f) or {}
     return deep_merge(DEFAULTS, normalize_user(user))
