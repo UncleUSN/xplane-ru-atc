@@ -8,6 +8,7 @@ import sys
 import tkinter as tk
 from tkinter import scrolledtext
 
+from . import window_title
 from .avatars import avatar_file
 from .phases import PHASE_RU, Phase
 from .radio_log import RadioHistory
@@ -18,7 +19,7 @@ from .window import WindowController, register_hotkeys
 def run_tk(app):
     ui_cfg = app.cfg.get("ui") or {}
     root = tk.Tk()
-    root.title("RU ATC — голосовой диспетчер X-Plane 12")
+    root.title(window_title())
     root.configure(bg="#1e1e1e")
     fg, bg = "#e0e0e0", "#1e1e1e"
     font = ("Segoe UI", 10) if sys.platform == "win32" else ("DejaVu Sans", 10)

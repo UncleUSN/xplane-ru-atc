@@ -1,0 +1,106 @@
+# Файл создан установщиком RU ATC 0.2b.
+# Распознавание: vosk-model-small-ru-0.22
+#   архив: https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
+# Синтез: Silero v4_ru, голос kseniya (все органы).
+#   пакет модели при первом запуске: https://models.silero.ai/models/tts/ru/v4_ru.pt
+#   код загрузчика: https://github.com/snakers4/silero-models
+# Другой голос каждому органу можно прописать в unit_voices.
+
+# Скопируйте в config.yaml и отредактируйте.
+callsign:
+  spoken: Аэрофлот         # как звучит позывной в эфире (компания)
+  number: "1234"           # номер рейса (произносится по цифрам)
+  # Полный позывной: "Аэрофлот 1234". Для частного борта: spoken: "RA", number: "73123"
+
+flight_plan:
+  departure: UUEE
+  arrival: ULLI
+  cruise_fl: 330
+  route: "по плану"        # произносится в разрешении ("по маршруту ...")
+  sid: ""                  # напр. "ЛАКИБ 1Г"; пусто -> "выход по схеме согласно плану"
+  star: ""
+  departure_runway: ""     # пусто -> выбор по ветру/предпочтениям из airports.yaml
+  arrival_runway: ""
+  arrival_stand: ""        # стоянка прибытия; пусто -> "на стоянку по указанию"
+
+# Импорт плана из FMC Zibo 737 (имеет приоритет над flight_plan выше; без плана — работаем по flight_plan)
+flight_plan_import:
+  source: auto             # auto (CDU + datarefs Zibo + .fms) | fmc (только FMC) | fms (только файл) | config (выкл.)
+  fmc_side: 1              # 1 — CDU КВС (fmc1), 2 — второго пилота (fmc2)
+  poll_s: 2.0              # как часто читать экран CDU, с
+  xplane_path: ""          # папка X-Plane 12, напр. "D:/X-Plane 12" — для Output/FMS plans (пусто = автопоиск)
+  fms_max_age_h: 12        # .fms старше — не брать, если FMC ещё пуст
+  callsign_from_fmc: true  # позывной из FLT NO. (AFL1234 -> «Аэрофлот 1234», см. airlines)
+
+airlines:                  # ИКАО-код компании -> позывной в эфире (для FLT NO. из FMC)
+  AFL: Аэрофлот
+  SDM: Россия
+  PBD: Победа
+  SBI: Сибирь
+  UTA: Ютэйр
+  SVR: Свердловск авиа
+
+sim:
+  source: webapi           # webapi | udp | mock
+  host: localhost          # для WSL/другого ПК укажите IP компьютера с X-Plane
+  webapi_port: 8086
+  webapi_version: auto     # auto | v1 | v2 | v3
+  udp_port: 49000          # порт X-Plane для RREF
+  udp_listen_port: 49010   # наш порт для ответов
+  use_zibo_datarefs: true
+  mock_time_scale: 4.0     # ускорение времени в режиме mock
+
+atc:
+  strict_frequency: true   # отвечать, только если COM1 настроен на частоту органа
+  confirm_correct_readback: true   # "Правильно" после верного повторения значений
+  readback_strictness: lenient     # lenient — «подтверждаю»/«подтверждаю приём»/«понял»/«роджер» достаточно
+                                   #   (и с позывным; «пятьсот первый», «шереметев», «делились» тоже).
+                                   #   Неверная ВПП/эшелон/код/частота — поправка. После двух просьб повторить
+                                   #   диспетчер сам называет значения и идёт дальше.
+                                   # strict — нужно повторить сами значения, голое «понял» не закроет указание
+  readback_timeout_s: 20
+  levels_digit_by_digit: false     # "эшелон двести сорок" (false) / "эшелон два четыре ноль" (true)
+  auto_descent: true       # РЦ сам даёт снижение у точки начала снижения
+  speed_limit_kt: 250      # учебная проверка скорости ниже 10000 ft (0 = выкл.)
+  voice_warnings: true     # озвучивать замечания диспетчера (отклонение от высоты и т.п.)
+
+voice:
+  enabled: true
+  ptt_key: "caps lock"     # клавиша (библиотека keyboard): "caps lock", "right ctrl", "f12"...
+  ptt_joystick: null       # {device: 0, button: 5} — кнопка джойстика через pygame
+  input_device: null       # null = устройство записи Windows по умолчанию; индекс (5) или часть имени ("acer", "headset")
+  output_device: null      # то же для наушников
+  host_api: null           # предпочтительный звуковой API при поиске по имени: WASAPI | MME | DirectSound
+                           # список устройств: python tools/mictest.py --list
+  stt_engine: vosk         # vosk | whisper
+  vosk_model_path: models/vosk-model-small-ru-0.22
+  vosk_grammar: false      # true = ограничить словарь фразеологией (только small-модели); в тестах точнее оказался свободный режим
+  whisper_model: small     # tiny | base | small | medium (faster-whisper)
+  whisper_device: auto     # auto | cpu | cuda
+  tts_engine: silero       # silero | pyttsx3 | edge | none
+  silero_speaker: kseniya    # aidar | baya | kseniya | xenia | eugene
+  unit_voices:             # разные голоса для разных органов (Silero)
+    delivery: kseniya
+    ground: kseniya
+    tower: kseniya
+    radar: kseniya
+    approach: kseniya
+    control: kseniya
+  edge_voice: ru-RU-DmitryNeural
+  radio_effect: true
+  radio_noise: 0.015
+
+ui:
+  mode: tk                 # tk | console   (старая запись «ui: tk» тоже понимается)
+  always_on_top: true      # окно поверх X-Plane (только оконный/безрамочный режим X-Plane!)
+  topmost_reassert_s: 2.0  # раз в N с снова поднимать окно наверх, не забирая фокус (0 = выкл.)
+  start_compact: false     # стартовать компактной панелью (или ключ --compact)
+  compact_alpha: 0.85      # прозрачность компактной панели 0.2..1.0
+  full_alpha: 1.0
+  compact_geometry: "560x180-20+40"   # ШxВ и положение: -20 = 20 px от ПРАВОГО края, +40 = 40 px от верха
+  full_geometry: "1100x680"
+  compact_borderless: true # панель без рамки; перетаскивается мышью, двойной щелчок — полный режим
+  hotkey_toggle: "ctrl+shift+a"   # глобально: показать/спрятать окно ("" = выкл.)
+  hotkey_compact: "ctrl+shift+z"  # глобально: компактный/полный режим
+  focus_on_show: false     # false — после показа окна вернуть фокус X-Plane
+log_dir: logs

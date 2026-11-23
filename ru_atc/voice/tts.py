@@ -19,12 +19,27 @@ class TTSBase:
         return None
 
 
+def _prepare_torch_cache() -> None:
+    """В собранном exe кеш torch.hub лежит рядом с программой, а не в профиле пользователя."""
+    import os
+    import sys
+    if os.environ.get("TORCH_HOME"):
+        return
+    if not getattr(sys, "frozen", False):
+        return
+    from ..config import app_root
+    cache = app_root() / "models" / "torch"
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ["TORCH_HOME"] = str(cache)
+
+
 class SileroTTS(TTSBase):
     """https://github.com/snakers4/silero-models — модель v4_ru (голоса aidar, baya, kseniya, xenia, eugene).
     При первом запуске скачивается через torch.hub (~40 МБ) и кешируется."""
     name = "silero"
 
     def __init__(self, speaker: str = "aidar", sample_rate: int = 48000, device: str = "cpu"):
+        _prepare_torch_cache()
         import torch  # noqa
         self.torch = torch
         self.model, _ = torch.hub.load(repo_or_dir="snakers4/silero-models", model="silero_tts",

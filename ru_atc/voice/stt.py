@@ -62,13 +62,15 @@ class WhisperSTT(STTBase):
 def make_stt(cfg: dict, extra_words=()) -> STTBase:
     from ..config import resolve_path
     from ..phraseology.vocab import build_vocabulary
+    from .download import ensure_vosk_model
     eng = cfg.get("stt_engine", "vosk")
     try:
         if eng == "whisper":
             return WhisperSTT(cfg.get("whisper_model", "small"), cfg.get("whisper_device", "auto"))
-        path = str(resolve_path(cfg.get("vosk_model_path", "models/vosk-model-small-ru-0.22")))
-        vocab = build_vocabulary(extra_words) if cfg.get("vosk_grammar", False) and "small" in path else None
-        return VoskSTT(path, vocab)
+        path = ensure_vosk_model(resolve_path(cfg.get("vosk_model_path", "models/vosk-model-small-ru-0.22")))
+        path_s = str(path)
+        vocab = build_vocabulary(extra_words) if cfg.get("vosk_grammar", False) and "small" in path_s else None
+        return VoskSTT(path_s, vocab)
     except Exception as e:
         log.warning("Распознавание речи (%s) недоступно: %s. Используйте ввод текстом.", eng, e)
         return STTBase()
