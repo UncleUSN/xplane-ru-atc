@@ -1,0 +1,68 @@
+"""Собрать config.yaml установщика из config.example.yaml, не теряя комментарии."""
+from __future__ import annotations
+
+import re
+
+from . import __version__
+from .voice.catalog import (
+    SILERO_CODE_REPO,
+    SILERO_MODEL_ID,
+    SILERO_PACKAGE_URL,
+    UNIT_VOICE_KEYS,
+    VOSK_BY_ID,
+    SILERO_BY_ID,
+)
+
+
+def render_installed_config(example: str, vosk_id: str, speaker: str) -> str:
+    """Подставить выбранные модель и голос в текст config.example.yaml.
+
+    Все органы в unit_voices получают один и тот же голос: в мастере
+    выбирается ровно один. Разные голоса можно прописать в файле потом.
+    """
+    if vosk_id not in VOSK_BY_ID:
+        raise ValueError(f"неизвестная модель Vosk: {vosk_id}")
+    if speaker not in SILERO_BY_ID:
+        raise ValueError(f"неизвестный голос Silero: {speaker}")
+    text = example.replace("\r\n", "\n")
+    text, n_path = re.subn(
+        r"(?m)^(\s*vosk_model_path:\s*)\S+",
+        rf"\g<1>models/{vosk_id}",
+        text,
+        count=1,
+    )
+    text, n_spk = re.subn(
+        r"(?m)^(\s*silero_speaker:\s*)\S+",
+        rf"\g<1>{speaker}",
+        text,
+        count=1,
+    )
+    if n_path != 1 or n_spk != 1:
+        raise ValueError("в шаблоне нет vosk_model_path или silero_speaker")
+
+    keys = "|".join(UNIT_VOICE_KEYS)
+    block_re = re.compile(rf"(?m)^  unit_voices:.*(?:\n    (?:{keys}):.*)+")
+
+    def repl_block(match: re.Match) -> str:
+        return re.sub(
+            rf"(?m)^(\s*(?:{keys}):\s*)\S+",
+            rf"\g<1>{speaker}",
+            match.group(0),
+        )
+
+    text, n_units = block_re.subn(repl_block, text, count=1)
+    if n_units != 1:
+        raise ValueError("в шаблоне нет блока unit_voices")
+    url = VOSK_BY_ID[vosk_id]["url"]
+    header = (
+        f"# Файл создан установщиком RU ATC {__version__}.\n"
+        f"# Распознавание: {vosk_id}\n"
+        f"#   архив: {url}\n"
+        f"# Синтез: Silero {SILERO_MODEL_ID}, голос {speaker} (все органы).\n"
+        f"#   пакет модели при первом запуске: {SILERO_PACKAGE_URL}\n"
+        f"#   код загрузчика: {SILERO_CODE_REPO}\n"
+        "# Другой голос каждому органу можно прописать в unit_voices.\n\n"
+    )
+    if not text.endswith("\n"):
+        text += "\n"
+    return header + text

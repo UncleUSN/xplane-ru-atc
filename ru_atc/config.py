@@ -3,10 +3,23 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+
+
+def app_root() -> Path:
+    """Каталог с config.yaml, data/ и models/.
+
+    В собранном exe это папка с RU-ATC.exe (её пишет установщик).
+    В исходниках — корень репозитория.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,7 +75,7 @@ def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
 
 def resolve_path(p: str) -> Path:
     path = Path(p)
-    return path if path.is_absolute() else ROOT / path
+    return path if path.is_absolute() else app_root() / path
 
 
 def normalize_user(user: Dict[str, Any]) -> Dict[str, Any]:
@@ -74,7 +87,7 @@ def normalize_user(user: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_config(path: str | None = None) -> Dict[str, Any]:
-    cfg_path = Path(path) if path else ROOT / "config.yaml"
+    cfg_path = Path(path) if path else app_root() / "config.yaml"
     user: Dict[str, Any] = {}
     if cfg_path.exists():
         with open(cfg_path, encoding="utf-8") as f:

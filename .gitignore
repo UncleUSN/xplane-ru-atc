@@ -6,3 +6,5 @@ logs/
 config.yaml
 .pytest_cache/
 *.bak
+build/
+dist/

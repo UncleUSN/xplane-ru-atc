@@ -1,0 +1,31 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -eq 3010) { exit 0 }
+          exit $LASTEXITCODE
+      - name: Build setup.exe
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File installer\build.ps1
+      - name: Upload setup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: RU-ATC-setup
+          path: dist/installer/*.exe
+          if-no-files-found: error

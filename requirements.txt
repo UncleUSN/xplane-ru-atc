@@ -14,8 +14,9 @@ vosk>=0.3.45
 # faster-whisper>=1.0   # точнее, но тяжелее; раскомментируйте при желании
 
 # Синтез речи
-# torch                 # для Silero — ставьте отдельно, см. README (CPU-сборка)
+# torch                 # для Silero — отдельно, CPU-сборка; см. вики «Запуск из исходников»
 # omegaconf             # нужен загрузчику Silero (torch.hub)
+# Сборка установщика Windows ставит оба пакета через requirements-build.txt
 pyttsx3>=2.90           # запасной вариант: голоса Windows (SAPI5)
 # edge-tts>=6.1         # онлайн-голоса Microsoft (нужен интернет)
 # miniaudio>=1.59       # декодер mp3 для edge-tts

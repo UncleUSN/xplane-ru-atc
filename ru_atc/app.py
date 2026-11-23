@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from . import __version__
 from .airspace import Airspace
 from .config import load_config, resolve_path
 from .controller import Controller
@@ -297,6 +298,7 @@ def main(argv=None):
         cfg["ui"]["start_compact"] = True
     logp = setup_logging(cfg.get("log_dir", "logs"), a.verbose)
     app = App(cfg, demo=a.demo, no_voice=a.no_voice)
+    print(f"RU ATC {__version__}")
     print(f"Лог: {logp}")
     if a.console or (cfg.get("ui") or {}).get("mode") == "console":
         run_console(app)

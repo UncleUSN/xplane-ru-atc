@@ -1,0 +1,7 @@
+# Зависимости сборки установщика Windows. Не нужны для pytest.
+# torch берётся CPU-сборкой с download.pytorch.org, не с PyPI (там тяжёлый набор CUDA).
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+torch
+omegaconf
+pyinstaller
