@@ -1,7 +1,7 @@
 """Напечатать __version__, не импортируя пакет (сборщику ещё не нужен yaml).
 
-Без аргументов — строка версии (0.3.0-beta).
-С --quad — четвёрка для VersionInfoVersion Windows (0.3.0.0).
+Без аргументов — строка версии (0.3.1-beta).
+С --quad — четвёрка для VersionInfoVersion Windows (0.3.1.0).
 """
 import ast
 import re

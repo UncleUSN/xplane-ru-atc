@@ -6,6 +6,7 @@ import pytest
 from ru_atc.controller import Controller
 from ru_atc.events import Hint, Transmission
 from ru_atc.phases import Phase
+from ru_atc.phraseology.courtesy import strip_courtesy_text
 from ru_atc.sources.mock import MockFlight, ScriptedPilot
 
 
@@ -28,7 +29,9 @@ def fly(cfg, airspace, dep, arr, faults=None, max_t=20000):
 
 
 def atc_lines(log):
-    return [f"[{e.unit.callsign}] {e.display}" for e in log if isinstance(e, Transmission)]
+    # Приветствие и прощание не входят в проверку порядка разрешений.
+    return [strip_courtesy_text(f"[{e.unit.callsign}] {e.display}")
+            for e in log if isinstance(e, Transmission)]
 
 
 def assert_in_order(lines, needles):

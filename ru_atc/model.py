@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from typing import List
+from typing import List, Optional
 
 M_TO_FT = 3.28084
 MS_TO_KT = 1.943844
@@ -44,6 +44,7 @@ class SimState:
     mcp_alt_ft: float = 0.0        # выставленная на MCP высота (если доступна)
     zibo_xpdr_pos: int = -1        # Zibo: 0 TEST? 1 STBY 2 ALT RPTG OFF 3 XPNDR 4 TA 5 TA/RA (-1 = нет данных)
     connected: bool = False
+    local_time_sec: Optional[float] = None  # секунды от местной полуночи в симе; None — нет данных
 
     # ---- производные ----
     @property

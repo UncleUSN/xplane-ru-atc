@@ -45,6 +45,10 @@ def apply_raw(state: SimState, raw: Dict[str, float]) -> SimState:
         state.baro_set_hpa = 1013.25
     if "zibo_mcp_alt" in raw: state.mcp_alt_ft = float(raw["zibo_mcp_alt"])
     elif "mcp_alt_ft" in raw: state.mcp_alt_ft = float(raw["mcp_alt_ft"])
+    if "local_time_sec" in raw:
+        sec = float(raw["local_time_sec"])
+        if sec == sec and sec >= 0:
+            state.local_time_sec = sec % 86400.0
     return state
 
 

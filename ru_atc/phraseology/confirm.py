@@ -166,6 +166,8 @@ def is_bare_confirmation(text: str, callsign: str = "", number: str = "", extra:
     rest = _remaining(tokens)
     if rest is None:
         return False
+    from .courtesy import strip_courtesy_tokens
+    rest = strip_courtesy_tokens(rest)
     allowed = _allowed_tokens(callsign, number, extra)
     station = set(normalize(extra).split()) if extra else set()
     return all(_token_allowed(tok, allowed, station) for tok in rest)

@@ -48,8 +48,11 @@ def test_udp_source():
     src = UdpSource("127.0.0.1", xp.getsockname()[1], listen_port=free_udp_port())
     src.start()
     deadline = time.time() + 5
-    while time.time() < deadline and src.snapshot().com1_khz == 0:
-        time.sleep(0.1)
+    while time.time() < deadline:
+        snap = src.snapshot()
+        if snap.com1_khz and snap.n1[1]:
+            break
+        time.sleep(0.05)
     s = src.snapshot()
     stop.set()
     src.stop()

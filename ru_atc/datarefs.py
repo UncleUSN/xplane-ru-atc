@@ -54,6 +54,8 @@ CORE = [
     DatarefSpec("wind_dir", "sim/weather/aircraft/wind_now_direction_degt", optional=True),
     DatarefSpec("wind_ms", "sim/weather/aircraft/wind_now_speed_msc", optional=True),
     DatarefSpec("mcp_alt_ft", "sim/cockpit2/autopilot/altitude_dial_ft", optional=True),
+    # Секунды от местной полуночи. Нет dataref — приветствие берёт часы компьютера.
+    DatarefSpec("local_time_sec", "sim/time/local_time_sec", optional=True),
 ]
 
 ZIBO = [

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .confirm import acknowledgement_span
+from .courtesy import annotate
 from .numbers import words_to_digits
 
 
@@ -82,6 +83,10 @@ class ParsedMessage:
     intent: str = "unknown"
     intents: List[str] = field(default_factory=list)
     slots: Dict[str, object] = field(default_factory=dict)
+    greet: bool = False
+    thanks: bool = False
+    goodbye: bool = False
+    farewell: bool = False
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<{self.intent} {self.slots} '{self.norm}'>"
@@ -185,4 +190,6 @@ def parse(text: str) -> ParsedMessage:
     # Короткое подтверждение с параметрами -> считаем readback
     if msg.intent in ("wilco", "unknown") and msg.slots:
         msg.intent = "readback"
+    # «добрый день» и «до свидания» не меняют просьбу и не делают фразу незнакомой.
+    annotate(msg)
     return msg

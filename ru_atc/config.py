@@ -41,7 +41,8 @@ DEFAULTS: Dict[str, Any] = {
     "atc": {"strict_frequency": True, "confirm_correct_readback": True,
             "readback_strictness": "lenient", "readback_timeout_s": 20,
             "levels_digit_by_digit": False, "auto_descent": True, "speed_limit_kt": 250,
-            "voice_warnings": True},
+            "voice_warnings": True,
+            "chattiness": "normal"},  # off | normal | high — приветствия и прощания
     "voice": {"enabled": True, "ptt_key": "caps lock", "ptt_joystick": None, "input_device": None,
               "output_device": None, "host_api": None, "stt_engine": "vosk",
               "vosk_model_path": "models/vosk-model-small-ru-0.22", "vosk_grammar": False, "whisper_model": "small",
