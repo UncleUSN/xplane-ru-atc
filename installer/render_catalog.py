@@ -26,18 +26,29 @@ def pascal_str(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def pascal_array(name: str, values: list) -> str:
-    if not values:
-        raise ValueError(name)
-    body = ",\n".join(f"    {pascal_str(v)}" for v in values)
-    return f"  {name}: array[0..{len(values) - 1}] of String = (\n{body}\n  );"
-
-
 def default_index(items: list) -> int:
     indexes = [i for i, item in enumerate(items) if item["default"]]
     if len(indexes) != 1:
         raise ValueError(f"нужен ровно один вариант по умолчанию, сейчас {indexes}")
     return indexes[0]
+
+
+def pascal_case_fn(name: str, values: list) -> str:
+    """Inno Setup в секции [Code] не принимает типизированные константы-массивы
+    (`Name: array[...] of String =`): на двоеточии ждёт `=`."""
+    if not values:
+        raise ValueError(name)
+    arms = "\n".join(f"    {i}: Result := {pascal_str(v)};" for i, v in enumerate(values))
+    return (
+        f"function {name}(I: Integer): String;\n"
+        "begin\n"
+        "  case I of\n"
+        f"{arms}\n"
+        "  else\n"
+        "    Result := '';\n"
+        "  end;\n"
+        "end;"
+    )
 
 
 def render_catalog_pas() -> str:
@@ -49,11 +60,16 @@ def render_catalog_pas() -> str:
         f"  VoskDefault = {vosk_default};",
         f"  SpeakerCount = {len(SILERO_VOICES)};",
         f"  SpeakerDefault = {speaker_default};",
-        pascal_array("VoskIds", [m["id"] for m in VOSK_MODELS]),
-        pascal_array("VoskUrls", [m["url"] for m in VOSK_MODELS]),
-        pascal_array("VoskCaptions", [m["caption"] for m in VOSK_MODELS]),
-        pascal_array("SpeakerIds", [v["id"] for v in SILERO_VOICES]),
-        pascal_array("SpeakerCaptions", [v["caption"] for v in SILERO_VOICES]),
+        "",
+        pascal_case_fn("VoskId", [m["id"] for m in VOSK_MODELS]),
+        "",
+        pascal_case_fn("VoskUrl", [m["url"] for m in VOSK_MODELS]),
+        "",
+        pascal_case_fn("VoskCaption", [m["caption"] for m in VOSK_MODELS]),
+        "",
+        pascal_case_fn("SpeakerId", [v["id"] for v in SILERO_VOICES]),
+        "",
+        pascal_case_fn("SpeakerCaption", [v["caption"] for v in SILERO_VOICES]),
         "",
     ]
     return "\n".join(parts)

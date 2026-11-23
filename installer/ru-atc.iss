@@ -174,7 +174,7 @@ end;
 
 function SelectedConfigFile: String;
 begin
-  Result := 'config-' + VoskIds[SelectedVosk] + '-' + SpeakerIds[SelectedSpeaker] + '.yaml';
+  Result := 'config-' + VoskId(SelectedVosk) + '-' + SpeakerId(SelectedSpeaker) + '.yaml';
 end;
 
 procedure InitializeWizard;
@@ -228,12 +228,12 @@ begin
   SetArrayLength(VoskItemIndex, VoskCount);
   ModelList.AddGroup('Распознавание речи — модель Vosk', '', 0, nil);
   for I := 0 to VoskCount - 1 do
-    VoskItemIndex[I] := ModelList.AddRadioButton(VoskCaptions[I], '', 0, I = VoskDefault, True, nil);
+    VoskItemIndex[I] := ModelList.AddRadioButton(VoskCaption(I), '', 0, I = VoskDefault, True, nil);
 
   SetArrayLength(SpeakerItemIndex, SpeakerCount);
   ModelList.AddGroup('Синтез речи — Silero v4_ru, один голос', '', 0, nil);
   for I := 0 to SpeakerCount - 1 do
-    SpeakerItemIndex[I] := ModelList.AddRadioButton(SpeakerCaptions[I], '', 0, I = SpeakerDefault, True, nil);
+    SpeakerItemIndex[I] := ModelList.AddRadioButton(SpeakerCaption(I), '', 0, I = SpeakerDefault, True, nil);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -250,14 +250,14 @@ begin
   if CurPageID <> wpReady then
     Exit;
   I := SelectedVosk;
-  ModelDir := ExpandConstant('{app}\models\' + VoskIds[I] + '\am');
+  ModelDir := ExpandConstant('{app}\models\' + VoskId(I) + '\am');
   ZipPath := ExpandConstant('{tmp}\vosk-model.zip');
   if DirExists(ModelDir) then
   begin
     Log('Модель уже лежит в ' + ModelDir);
     Exit;
   end;
-  if (DownloadedVosk = VoskIds[I]) and FileExists(ZipPath) then
+  if (DownloadedVosk = VoskId(I)) and FileExists(ZipPath) then
   begin
     Log('Архив этой модели уже скачан');
     Exit;
@@ -265,12 +265,12 @@ begin
   DeleteFile(ZipPath);
   DownloadedVosk := '';
   DownloadPage.Clear;
-  DownloadPage.Add(VoskUrls[I], 'vosk-model.zip', '');
+  DownloadPage.Add(VoskUrl(I), 'vosk-model.zip', '');
   DownloadPage.Show;
   try
     try
       DownloadPage.Download;
-      DownloadedVosk := VoskIds[I];
+      DownloadedVosk := VoskId(I);
     except
       DeleteFile(ZipPath);
       SuppressibleMsgBox(

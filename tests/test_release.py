@@ -129,6 +129,9 @@ def test_generated_installer_data_matches_catalog(tmp_path):
         on_disk = (folder / name).read_text(encoding="utf-8-sig")
         assert on_disk.replace("\r\n", "\n") == text.replace("\r\n", "\n")
     pas = fresh["catalog.pas"]
+    assert ": array[" not in pas
+    assert "function VoskId(" in pas and "function VoskCaption(" in pas
+    assert "function SpeakerId(" in pas and "function SpeakerCaption(" in pas
     for model in VOSK_MODELS:
         assert model["url"] in pas
         assert model["caption"] in pas
@@ -138,7 +141,8 @@ def test_generated_installer_data_matches_catalog(tmp_path):
     assert "AddRadioButton" in iss
     assert iss.count("AddGroup(") == 2
     assert "CreateDownloadPage" in iss
-    assert "VoskCaptions" in iss and "SpeakerCaptions" in iss
+    assert "VoskCaption(" in iss and "SpeakerCaption(" in iss
+    assert "VoskIds[" not in iss and "VoskCaptions[" not in iss
     assert "config.yaml" in iss
     assert "CreateInputDirPage" in iss
     assert "x-plane_install_12.txt" in iss
