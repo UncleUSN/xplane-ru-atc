@@ -20,17 +20,12 @@ class TTSBase:
 
 
 def _prepare_torch_cache() -> None:
-    """В собранном exe кеш torch.hub лежит рядом с программой, а не в профиле пользователя."""
-    import os
-    import sys
-    if os.environ.get("TORCH_HOME"):
-        return
-    if not getattr(sys, "frozen", False):
-        return
-    from ..config import app_root
-    cache = app_root() / "models" / "torch"
-    cache.mkdir(parents=True, exist_ok=True)
-    os.environ["TORCH_HOME"] = str(cache)
+    """Кеш torch.hub — ``models/torch`` в папке программы, если ``TORCH_HOME`` не задан.
+
+    И у установленной копии, и при запуске из исходников. Свой ``TORCH_HOME`` не трогаем.
+    """
+    from ..config import prepare_runtime_caches
+    prepare_runtime_caches()
 
 
 class SileroTTS(TTSBase):

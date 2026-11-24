@@ -1,4 +1,4 @@
-# Файл создан установщиком RU ATC 0.3.2-beta.
+# Файл создан установщиком RU ATC 0.3.3-beta.
 # Распознавание: vosk-model-ru-0.42
 #   архив: https://alphacephei.com/vosk/models/vosk-model-ru-0.42.zip
 # Синтез: Silero v4_ru, голос aidar (все органы).
@@ -40,7 +40,7 @@ flight_plan_import:
 navdata:
   provider: xplane
   xplane_path: ""          # если пусто — берётся flight_plan_import.xplane_path
-  cache_dir: ""            # пусто = каталог данных пользователя (не папка программы)
+  cache_dir: ""            # пусто = cache/navdata.sqlite в папке программы; свой путь или RU_ATC_DATA — если заданы
   corridor_km: 50          # коридор вокруг маршрута, км
   rebuild: false           # true = пересобрать кэш на этом запуске
 
