@@ -48,9 +48,17 @@ class WhisperSTT(STTBase):
     name = "whisper"
 
     def __init__(self, model: str = "small", device: str = "auto"):
+        from ..config import prepare_runtime_caches, whisper_download_root
+        # Корень смотрим до prepare: свой HF_HOME не должен подмениться нашим.
+        download_root = whisper_download_root()
+        prepare_runtime_caches()
         from faster_whisper import WhisperModel
         compute = "int8" if device in ("cpu", "auto") else "float16"
-        self.model = WhisperModel(model, device=device, compute_type=compute)
+        kwargs = {}
+        if download_root is not None:
+            download_root.mkdir(parents=True, exist_ok=True)
+            kwargs["download_root"] = str(download_root)
+        self.model = WhisperModel(model, device=device, compute_type=compute, **kwargs)
 
     def transcribe(self, audio_int16: np.ndarray) -> str:
         audio = audio_int16.astype(np.float32) / 32768.0

@@ -17,6 +17,10 @@ def app_root() -> Path:
 
     В собранном exe это папка с RU-ATC.exe (её пишет установщик).
     В исходниках — корень репозитория.
+
+    Сюда же пишутся ``cache``, ``logs`` и скачанные модели. Папка должна
+    быть доступна для записи. Установщик по умолчанию выбирает
+    ``%LOCALAPPDATA%\\RU ATC``, не «Program Files».
     """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -24,6 +28,93 @@ def app_root() -> Path:
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _same_path(current: str, expected: Path) -> bool:
+    try:
+        return Path(current).resolve() == expected.resolve()
+    except OSError:
+        return os.path.normcase(os.path.abspath(current)) == os.path.normcase(str(expected))
+
+
+def torch_cache_dir() -> Path:
+    """Кеш torch.hub (Silero): ``models/torch`` в папке программы."""
+    return app_root() / "models" / "torch"
+
+
+def whisper_model_dir() -> Path:
+    """Каталог весов faster-whisper, если свой кеш Hugging Face не задан."""
+    return app_root() / "models" / "whisper"
+
+
+def huggingface_cache_dir() -> Path:
+    """Прочие файлы Hugging Face: ``cache/huggingface``."""
+    return app_root() / "cache" / "huggingface"
+
+
+def huggingface_hub_explicit() -> bool:
+    """True, если HF_HOME / HF_HUB_CACHE указывают не в папку программы.
+
+    Путь, который выставила сама ``prepare_runtime_caches``, явным не считается:
+    повторный вызов и загрузка Whisper не должны уезжать в профиль.
+    """
+    hf = huggingface_cache_dir()
+    expected = {
+        "HF_HOME": hf,
+        "HF_HUB_CACHE": hf / "hub",
+        "HUGGINGFACE_HUB_CACHE": hf / "hub",
+    }
+    for name, path in expected.items():
+        current = os.environ.get(name, "").strip()
+        if current and not _same_path(current, path):
+            return True
+    return False
+
+
+def whisper_download_root() -> Path | None:
+    """Папка модели faster-whisper. None — кеш Hugging Face задан снаружи."""
+    if huggingface_hub_explicit():
+        return None
+    return whisper_model_dir()
+
+
+def _mkdir_cache(path: Path, problems: list) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        problems.append(f"{path}: {exc}")
+
+
+def prepare_runtime_caches() -> list:
+    """Направить кеши библиотек в папку программы.
+
+    Уже заданные ``TORCH_HOME``, ``HF_HOME``, ``HF_HUB_CACHE``,
+    ``HUGGINGFACE_HUB_CACHE`` и ``XDG_CACHE_HOME`` не перезаписываются,
+    если они указывают в другое место. Каталоги создаются сразу, чтобы
+    ошибка прав была видна до скачивания. Список — это пути, которые
+    не удалось создать. Переменные всё равно выставляются: в профиль
+    пользователя библиотеки не откатываются.
+    """
+    problems: list = []
+    torch_dir = torch_cache_dir()
+    torch_now = os.environ.get("TORCH_HOME", "").strip()
+    if not torch_now or _same_path(torch_now, torch_dir):
+        _mkdir_cache(torch_dir, problems)
+        os.environ["TORCH_HOME"] = str(torch_dir)
+    if not huggingface_hub_explicit():
+        hf = huggingface_cache_dir()
+        _mkdir_cache(hf, problems)
+        os.environ["HF_HOME"] = str(hf)
+        os.environ["HF_HUB_CACHE"] = str(hf / "hub")
+        os.environ["HUGGINGFACE_HUB_CACHE"] = str(hf / "hub")
+        if not os.environ.get("TRANSFORMERS_CACHE", "").strip():
+            os.environ["TRANSFORMERS_CACHE"] = str(hf / "transformers")
+    xdg = app_root() / "cache"
+    xdg_now = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if not xdg_now or _same_path(xdg_now, xdg):
+        _mkdir_cache(xdg, problems)
+        os.environ["XDG_CACHE_HOME"] = str(xdg)
+    return problems
 
 DEFAULTS: Dict[str, Any] = {
     "callsign": {"spoken": "Аэрофлот", "number": "1234"},

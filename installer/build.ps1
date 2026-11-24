@@ -123,6 +123,15 @@ function Invoke-RuAtc {
 Invoke-RuAtc -Argument "--help" -TimeoutMs 120000 -Report (Join-Path $Root "dist\help.txt")
 Invoke-RuAtc -Argument "--smoke" -TimeoutMs 600000 -Report (Join-Path $Root "dist\smoke.txt")
 Remove-Item -ErrorAction SilentlyContinue Env:\RU_ATC_SMOKE_REPORT
+# --smoke направляет кеши в папку exe и может создать пустые cache и models\torch.
+# В установщик их не кладём. Пустые models\ и logs\ скрипт создал сам, их оставляем.
+foreach ($rel in @("cache", "models\torch")) {
+    $leftover = Join-Path $Dist $rel
+    if (Test-Path -LiteralPath $leftover) {
+        Remove-Item -LiteralPath $leftover -Recurse -Force
+        Write-Host "Убран служебный каталог проверки: $rel"
+    }
+}
 
 $IsccCandidates = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",

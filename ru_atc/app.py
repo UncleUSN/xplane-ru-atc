@@ -14,7 +14,7 @@ from typing import List, Optional
 
 from . import __version__
 from .airspace import Airspace
-from .config import load_config, resolve_path
+from .config import load_config, prepare_runtime_caches, resolve_path
 from .controller import Controller
 from .events import Hint, PilotMessage, Transmission
 from .phases import PHASE_RU
@@ -288,6 +288,8 @@ def smoke_check() -> int:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    # До import torch: иначе hub может успеть выбрать каталог в профиле.
+    prepare_runtime_caches()
 
     lines: List[str] = []
     rc = 0
@@ -448,6 +450,7 @@ def main(argv=None):
     ap.add_argument("--arr", help="аэродром назначения (ICAO)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
+    cache_problems = prepare_runtime_caches()
     cfg = load_config(a.config)
     if a.source:
         cfg["sim"]["source"] = a.source
@@ -462,6 +465,8 @@ def main(argv=None):
     if a.rebuild_nav:
         cfg.setdefault("navdata", {})["rebuild"] = True
     logp = setup_logging(cfg.get("log_dir", "logs"), a.verbose)
+    for item in cache_problems:
+        log.warning("Каталог данных недоступен для записи (нужна папка программы, не профиль): %s", item)
     app = App(cfg, demo=a.demo, no_voice=a.no_voice)
     print(f"RU ATC {__version__}")
     print(f"Лог: {logp}")

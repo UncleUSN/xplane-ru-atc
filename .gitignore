@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 models/
 logs/
+cache/
 config.yaml
 .pytest_cache/
 *.bak

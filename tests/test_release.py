@@ -1,4 +1,4 @@
-"""Версия 0.3.2-beta, каталог моделей и страницы мастера установщика."""
+"""Версия 0.3.3-beta, каталог моделей и страницы мастера установщика."""
 import io
 import subprocess
 import sys
@@ -24,16 +24,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_is_single_source():
-    assert __version__ == "0.3.2-beta"
-    assert "0.3.2-beta" in window_title()
+    assert __version__ == "0.3.3-beta"
+    assert "0.3.3-beta" in window_title()
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "version =" not in text
     script = ROOT / "installer" / "print_version.py"
     assert "__init__.py" in script.read_text(encoding="utf-8")
     printed = subprocess.check_output([sys.executable, str(script)], text=True).strip()
     quad = subprocess.check_output([sys.executable, str(script), "--quad"], text=True).strip()
-    assert printed == "0.3.2-beta"
-    assert quad == "0.3.2.0"
+    assert printed == "0.3.3-beta"
+    assert quad == "0.3.3.0"
 
 
 def test_app_root_is_repo_when_not_frozen():
@@ -67,6 +67,7 @@ def test_installer_paths_resolve_to_repo_root():
     assert "PYTHONUTF8" in ps1
     assert "--smoke" in ps1
     assert "libportaudio64bit.dll" in ps1
+    assert "models\\torch" in ps1
 
     iss = (ROOT / "installer" / "ru-atc.iss").read_text(encoding="utf-8-sig")
     assert "OutputDir=..\\dist\\installer" in iss
@@ -140,7 +141,12 @@ def test_generated_installer_data_matches_catalog(tmp_path):
     iss = (ROOT / "installer" / "ru-atc.iss").read_text(encoding="utf-8-sig")
     assert "AddRadioButton" in iss
     assert iss.count("AddGroup(") == 2
-    assert "CreateDownloadPage" in iss
+    assert "CreateOutputProgressPage" in iss
+    assert "download_model.ps1" in iss
+    assert "{tmp}\\vosk-model.zip" not in iss
+    assert "DelTree(ExpandConstant('{app}\\cache')" in iss
+    assert "Program Files" in iss
+    assert "ru-atc-write.tmp" in iss
     assert "VoskCaption(" in iss and "SpeakerCaption(" in iss
     assert "VoskIds[" not in iss and "VoskCaptions[" not in iss
     assert "config.yaml" in iss

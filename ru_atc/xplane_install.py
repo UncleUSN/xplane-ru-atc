@@ -236,11 +236,13 @@ def explain_fms_miss(xplane_path: str = "") -> str:
     return f"папка Output/FMS plans не найдена ({where}). {tail}"
 
 
-def user_data_dir() -> Path:
-    """Каталог кэша и прочих файлов пользователя, не папка установки."""
-    override = os.environ.get("RU_ATC_DATA")
-    if override:
-        return Path(override)
+def legacy_user_data_dir() -> Path:
+    """Куда 0.3.2-beta клал ``navdata.sqlite`` в профиле.
+
+    ``RU_ATC_DATA`` здесь не учитывается: это явный каталог и тогда, и сейчас.
+    Функция нужна только для переноса. Сам каталог и чужие файлы в нём
+    программа не удаляет.
+    """
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "RU ATC"
@@ -249,6 +251,20 @@ def user_data_dir() -> Path:
     data_home = os.environ.get("XDG_DATA_HOME")
     root = Path(data_home) if data_home else Path.home() / ".local" / "share"
     return root / "ru-atc"
+
+
+def user_data_dir() -> Path:
+    """Каталог данных программы (кэш навигации).
+
+    Явная ``RU_ATC_DATA`` побеждает. Иначе это ``cache`` в папке программы:
+    каталог ``RU-ATC.exe`` или корень репозитория. Папка должна быть доступна
+    для записи. Установщик по умолчанию ставит в ``%LOCALAPPDATA%\\RU ATC``.
+    """
+    override = os.environ.get("RU_ATC_DATA", "").strip()
+    if override:
+        return Path(override)
+    from .config import app_root
+    return app_root() / "cache"
 
 
 def fms_configured_path(cfg: dict) -> str:
