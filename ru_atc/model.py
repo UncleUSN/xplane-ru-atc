@@ -45,6 +45,11 @@ class SimState:
     zibo_xpdr_pos: int = -1        # Zibo: 0 TEST? 1 STBY 2 ALT RPTG OFF 3 XPNDR 4 TA 5 TA/RA (-1 = нет данных)
     connected: bool = False
     local_time_sec: Optional[float] = None  # секунды от местной полуночи в симе; None — нет данных
+    vis_m: Optional[float] = None          # sim/weather/aircraft/visibility_reported_m
+    temp_c: Optional[float] = None
+    dew_c: Optional[float] = None
+    cloud_cov: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    cloud_base_m: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
 
     # ---- производные ----
     @property

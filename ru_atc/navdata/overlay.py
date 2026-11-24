@@ -52,6 +52,8 @@ def _set_freq(airport: Airport, kind: str, mhz: float, source: str, notes: List[
             existing.source = source
             return
         old = existing.freq
+        if not any(abs(old - alias) < 0.0005 for alias in existing.aliases):
+            existing.aliases.append(old)
         existing.freq = mhz
         existing.source = source
         if not quiet:
@@ -66,7 +68,14 @@ def _set_freq(airport: Airport, kind: str, mhz: float, source: str, notes: List[
 def update_airport(airport: Airport, cache: NavCache, quiet: bool = False) -> List[str]:
     notes: List[str] = []
     comms = cache.comms(airport.icao)
+    atis = comms.get("atis")
+    if atis:
+        airport.atis_mhz = float(atis[0])
+        if airport.icao in HOME and not quiet:
+            notes.append(f"{airport.icao} АТИС {atis[0]:.3f} ({atis[2] or 'apt.dat'})")
     for kind, (mhz, _name, source) in comms.items():
+        if kind == "atis":
+            continue
         _set_freq(airport, kind, mhz, source or "apt.dat", notes, quiet)
     for role, kind in (("twr", "tower"), ("del", "delivery"), ("gnd", "ground")):
         override = cache.role_override(airport.icao, role, kind)
@@ -91,6 +100,12 @@ def update_airport(airport: Airport, cache: NavCache, quiet: bool = False) -> Li
         airport.runways.append(Runway(ident, float(row["heading_true"] or 0),
                                        cache.localizer_mhz(airport.icao, ident)))
         known.add(ident)
+    if not quiet:
+        for unit in airport.units.values():
+            if not unit.aliases:
+                continue
+            alias = ", ".join(f"{mhz:.3f}" for mhz in unit.aliases)
+            notes.append(f"{airport.icao} {unit.callsign}: в эфире {unit.freq:.3f}, также {alias}")
     return notes
 
 
@@ -102,7 +117,13 @@ def apply_navdata(airspace: Airspace, cache: NavCache) -> List[str]:
         airport_notes = update_airport(airport, cache, quiet=airport.icao not in HOME)
         changed += len(airport_notes)
         if airport.icao in HOME:
-            notes.extend(airport_notes[:6])
+            # Первые строки — что сменил apt.dat. «в эфире» и atc.dat дописываем всегда:
+            # иначе окно показывает 128.600, а орган уже на другой частоте из atc.dat.
+            shown = list(airport_notes[:8])
+            for line in airport_notes:
+                if ("в эфире" in line or "atc.dat" in line) and line not in shown:
+                    shown.append(line)
+            notes.extend(shown)
     if changed and len(notes) < changed:
         notes.append(f"Частоты обновлены у органов: {changed} (в окне — основные аэродромы).")
     airspace.sectors = [sector for sector in airspace.sectors if sector.source == "yaml"]

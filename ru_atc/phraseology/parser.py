@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .callsign import HeardCallsign, extract_callsign
 from .confirm import acknowledgement_span
 from .courtesy import annotate
 from .numbers import words_to_digits
@@ -16,6 +17,11 @@ from .numbers import words_to_digits
 
 # Порядок важен: более специфичные намерения раньше
 INTENT_PATTERNS: List[tuple] = [
+    ("emergency_cancel", [r"отмен\w* бедств", r"отбой бедств", r"отбой мэйд", r"отбой мейд", r"отбой майд",
+                          r"отбой пан", r"ситуаци\w* нормал", r"бедстви\w* сня", r"отменяю пан",
+                          r"отменяю аварий"]),
+    ("emergency_mayday", [r"мэйд\w*", r"мейд\w*", r"майд\w*", r"\bmayday\b"]),
+    ("emergency_pan", [r"пан\s*пан", r"панпан", r"\bpan\s*pan\b"]),
     ("radio_check", [r"проверка связи", r"как (?:меня )?слыши"]),
     ("request_push_start", [r"буксировк\w* и запуск", r"запуск и буксировк", r"буксировк\w*.*запуск",
                             r"выталкивани\w* и запуск"]),
@@ -41,8 +47,14 @@ INTENT_PATTERNS: List[tuple] = [
     ("request_landing", [r"(?:разрешите|прошу)\s+посадк", r"к посадке готов", r"готов\w* к посадке"]),
     ("going_around", [r"ухожу на второй", r"на второй круг"]),
     ("report_level", [r"занял\w*", r"сохраняю", r"на эшелоне", r"иду на эшелоне", r"следую на эшелоне"]),
+    ("request_weather", [r"сообщите погод", r"фактическ\w* погод", r"какая погода",
+                         r"погод\w*\s+(?:в|на|по)\b", r"\bметеор"]),
     ("check_in", [r"на связи", r"добрый (?:день|вечер)", r"доброе утро", r"здравствуйте", r"приветствую"]),
+    ("request_atis", [r"\bатис\b", r"прослушайте информаци", r"включите информаци",
+                      r"запросите информаци", r"повторите информаци"]),
     ("say_again", [r"повторите", r"не понял"]),
+    ("atis_ack", [r"информаци\w*.{0,40}(?:получил\w*|принял\w*|имею|принято)",
+                  r"(?:получил\w*|принял\w*|имею)\s+информаци"]),
 ]
 
 RUNWAY_RE = re.compile(r"(?:впп|полос\w*|вэпэпэ)\s+(\d{1,2})\s*(лев\w*|прав\w*|центр\w*)?")
@@ -87,6 +99,7 @@ class ParsedMessage:
     thanks: bool = False
     goodbye: bool = False
     farewell: bool = False
+    callsign: Optional[HeardCallsign] = None
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<{self.intent} {self.slots} '{self.norm}'>"
@@ -180,6 +193,7 @@ def parse(text: str) -> ParsedMessage:
         msg.intents.remove("request_lineup")
     msg.intent = msg.intents[0] if msg.intents else "unknown"
     msg.slots = extract_slots(norm)
+    msg.callsign = extract_callsign(norm)
     # «подтверждаю» / «понял» / «роджер», в том числе с опечаткой распознавателя.
     # «не понял» сюда не попадает: отрицание отсекается, остаётся say_again.
     if acknowledgement_span(norm.split()):
@@ -192,4 +206,11 @@ def parse(text: str) -> ParsedMessage:
         msg.intent = "readback"
     # «добрый день» и «до свидания» не меняют просьбу и не делают фразу незнакомой.
     annotate(msg)
+    # Одно название борта без другой просьбы — выход на связь, а не «повторите».
+    if msg.callsign and msg.intent == "unknown" and not msg.slots:
+        others = [i for i in msg.intents if i not in ("unknown", "check_in")]
+        if not others:
+            msg.intent = "check_in"
+            if "check_in" not in msg.intents:
+                msg.intents.append("check_in")
     return msg

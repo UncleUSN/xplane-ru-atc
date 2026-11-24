@@ -23,6 +23,17 @@ def build_rref_request(freq: int, index: int, name: str) -> bytes:
     return b"RREF\x00" + struct.pack("<ii", freq, index) + payload.ljust(400, b"\x00")
 
 
+def build_dref(name: str, value: float) -> bytes:
+    """Пакет DREF: записать dataref. Имя дополняется до 500 байт."""
+    payload = name.encode("ascii")[:499]
+    return b"DREF\x00" + struct.pack("<f", float(value)) + payload.ljust(500, b"\x00")
+
+
+def build_cmnd(name: str) -> bytes:
+    """Пакет CMND: однократно выполнить команду X-Plane."""
+    return b"CMND\x00" + name.encode("ascii")
+
+
 def parse_rref_packet(data: bytes) -> List[Tuple[int, float]]:
     if not data.startswith(b"RREF") or len(data) < 5:
         return []
@@ -58,6 +69,23 @@ class UdpSource(DataSource):
         for i, s in enumerate(self.specs):
             name = s.name if s.index is None else f"{s.name}[{s.index}]"
             self.sock.sendto(build_rref_request(freq, i, name), self.addr)
+
+    def tune_com1(self, khz: int) -> tuple:
+        """Резерв COM1, команда обмена и запись активной частоты по UDP."""
+        from ..radio import COM1_ACTIVE, COM1_FLIP, COM1_STANDBY, describe_tune, khz_value
+        if self.sock is None:
+            return False, "UDP ещё не подключён, COM1 не перестроен"
+        try:
+            value = khz_value(khz)
+        except ValueError as e:
+            return False, str(e)
+        try:
+            self.sock.sendto(build_dref(COM1_STANDBY, value), self.addr)
+            self.sock.sendto(build_cmnd(COM1_FLIP), self.addr)
+            self.sock.sendto(build_dref(COM1_ACTIVE, value), self.addr)
+        except OSError as e:
+            return False, f"COM1 не перестроен: {e}"
+        return True, describe_tune(value, flipped=True, wrote_active=True)
 
     def stop(self) -> None:
         self._stop.set()
