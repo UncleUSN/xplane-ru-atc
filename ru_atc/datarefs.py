@@ -56,6 +56,17 @@ CORE = [
     DatarefSpec("mcp_alt_ft", "sim/cockpit2/autopilot/altitude_dial_ft", optional=True),
     # Секунды от местной полуночи. Нет dataref — приветствие берёт часы компьютера.
     DatarefSpec("local_time_sec", "sim/time/local_time_sec", optional=True),
+    # Погода в точке самолёта. Нет dataref в этой сборке X-Plane — поле остаётся пустым.
+    DatarefSpec("vis_m", "sim/weather/aircraft/visibility_reported_m", optional=True),
+    DatarefSpec("temp_c", "sim/weather/aircraft/temperature_ambient_c", optional=True),
+    DatarefSpec("dew_c", "sim/weather/aircraft/dewpoint_deg_c", optional=True),
+    DatarefSpec("dew_region_c", "sim/weather/region/dewpoint_deg_c", 0, optional=True),
+    DatarefSpec("cloud_cov_0", "sim/weather/aircraft/cloud_coverage_percent", 0, optional=True),
+    DatarefSpec("cloud_cov_1", "sim/weather/aircraft/cloud_coverage_percent", 1, optional=True),
+    DatarefSpec("cloud_cov_2", "sim/weather/aircraft/cloud_coverage_percent", 2, optional=True),
+    DatarefSpec("cloud_base_0", "sim/weather/aircraft/cloud_base_msl_m", 0, optional=True),
+    DatarefSpec("cloud_base_1", "sim/weather/aircraft/cloud_base_msl_m", 1, optional=True),
+    DatarefSpec("cloud_base_2", "sim/weather/aircraft/cloud_base_msl_m", 2, optional=True),
 ]
 
 ZIBO = [

@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .base import DataSource
 from ..datarefs import all_specs
@@ -76,17 +76,30 @@ def normalize_host(host: str) -> str:
     return "127.0.0.1" if str(host).strip().lower() == "localhost" else str(host).strip()
 
 
-def rest_get(host: str, port: int, path: str, timeout: float = 3.0):
-    """GET к Web API X-Plane, без системного прокси/VPN (urllib на Windows берёт прокси из реестра)."""
+def rest_send(host: str, port: int, method: str, path: str, payload: Optional[dict] = None,
+              timeout: float = 3.0):
+    """HTTP к Web API без системного прокси. Пустой ответ (PATCH 200) — это {}."""
     url = f"http://{host}:{port}{path}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         r = opener.open(req, timeout=timeout)
     except OSError as e:
-        raise OSError(f"REST {url}: {e}") from e
+        raise OSError(f"REST {method} {url}: {e}") from e
     with r:
-        return json.loads(r.read().decode("utf-8"))
+        raw = r.read()
+    if not raw or not raw.strip():
+        return {}
+    return json.loads(raw.decode("utf-8"))
+
+
+def rest_get(host: str, port: int, path: str, timeout: float = 3.0):
+    """GET к Web API X-Plane, без системного прокси/VPN (urllib на Windows берёт прокси из реестра)."""
+    return rest_send(host, port, "GET", path, timeout=timeout)
 
 
 def _printable_ratio(s: str) -> float:
@@ -214,6 +227,7 @@ class WebApiSource(DataSource):
         self._ws = None
         self.missing: List[str] = []
         self.ws_alive = False
+        self.api_ver = ""
 
     def is_connected(self) -> bool:
         # Web API присылает только ИЗМЕНИВШИЕСЯ значения: на стоянке сообщений может не быть долго,
@@ -287,6 +301,7 @@ class WebApiSource(DataSource):
         while not self._stop.is_set():
             try:
                 ver = self.detect_version()
+                self.api_ver = ver
                 groups = group_specs(all_specs(self.use_zibo))
                 ids = self.resolve_ids(ver, list(groups))
                 if not ids:
@@ -326,3 +341,66 @@ class WebApiSource(DataSource):
                 self.error = f"Web API: {e}"
                 log.warning("%s — повтор через 3 с", self.error)
                 time.sleep(3)
+
+    def tune_com1(self, khz: int) -> Tuple[bool, str]:
+        """Резерв COM1, обмен с активной, иначе запись активной частоты.
+
+        Dataref ``com1_*_frequency_hz_833`` — целое в кГц (121800 = 121.800).
+        Команда ``sim/radios/com1_standy_flip`` есть с Web API v2. Zibo читает
+        эти же штатные dataref, отдельный dataref кабины не требуется.
+        """
+        from ..radio import COM1_ACTIVE, COM1_FLIP, COM1_STANDBY, describe_tune, khz_value
+        ver = self.api_ver
+        if not ver:
+            return False, "Web API ещё не подключен, COM1 не перестроен"
+        try:
+            value = khz_value(khz)
+        except ValueError as e:
+            return False, str(e)
+        try:
+            standby = self.resolve_ids(ver, [COM1_STANDBY]).get(COM1_STANDBY)
+            active = self.resolve_ids(ver, [COM1_ACTIVE]).get(COM1_ACTIVE)
+        except Exception as e:
+            return False, f"COM1: не удалось найти dataref ({e})"
+        if not standby and not active:
+            return False, "COM1: X-Plane не отдал dataref частоты"
+        flipped = False
+        wrote_active = False
+        try:
+            if standby:
+                rest_send(self.host, self.port, "PATCH", f"/api/{ver}/datarefs/{standby}/value",
+                          {"data": value})
+            cmd = self._flip_command_id(ver) if _version_at_least(ver, 2) else None
+            if cmd:
+                rest_send(self.host, self.port, "POST", f"/api/{ver}/command/{cmd}/activate",
+                          {"duration": 0})
+                flipped = True
+            if active:
+                rest_send(self.host, self.port, "PATCH", f"/api/{ver}/datarefs/{active}/value",
+                          {"data": value})
+                wrote_active = True
+        except Exception as e:
+            return False, f"COM1 не перестроен: {e}"
+        if not standby and not wrote_active:
+            return False, "COM1: нет доступного dataref"
+        return True, describe_tune(value, flipped=flipped, wrote_active=wrote_active)
+
+    def _flip_command_id(self, ver: str) -> Optional[int]:
+        from ..radio import COM1_FLIP
+        try:
+            res = self._get(f"/api/{ver}/commands?" + build_name_query([COM1_FLIP], with_fields=False))
+        except Exception as e:
+            log.info("Команда %s недоступна: %s", COM1_FLIP, e)
+            return None
+        for item in res.get("data", []):
+            if item.get("name") == COM1_FLIP and int(item.get("id") or 0) > 0:
+                return int(item["id"])
+        return None
+
+
+def _version_at_least(ver: str, number: int) -> bool:
+    digits = "".join(ch for ch in str(ver) if ch.isdigit())
+    try:
+        return int(digits or "0") >= number
+    except ValueError:
+        return False

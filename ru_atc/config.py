@@ -9,6 +9,8 @@ from typing import Any, Dict
 
 import yaml
 
+from .phraseology.callsign import DEFAULT_AIRLINES
+
 
 def app_root() -> Path:
     """Каталог с config.yaml, data/ и models/.
@@ -33,11 +35,12 @@ DEFAULTS: Dict[str, Any] = {
                 "corridor_km": 50, "rebuild": False},
     "flight_plan_import": {"source": "auto", "fmc_side": 1, "poll_s": 2.0, "xplane_path": "",
                            "fms_max_age_h": 12, "callsign_from_fmc": True},
-    "airlines": {"AFL": "Аэрофлот", "SDM": "Россия", "PBD": "Победа", "SBI": "Сибирь", "UTA": "Ютэйр",
-                 "SVR": "Свердловск авиа"},
+    "airlines": dict(DEFAULT_AIRLINES),
     "sim": {"source": "webapi", "host": "localhost", "webapi_port": 8086, "webapi_version": "auto",
             "udp_port": 49000, "udp_listen_port": 49010, "use_zibo_datarefs": True,
             "mock_time_scale": 4.0},
+    # Выключено: пилот сам ставит частоту, диспетчер проверяет активный COM1.
+    "radio": {"auto_tune_com1": False},
     "atc": {"strict_frequency": True, "confirm_correct_readback": True,
             "readback_strictness": "lenient", "readback_timeout_s": 20,
             "levels_digit_by_digit": False, "auto_descent": True, "speed_limit_kt": 250,

@@ -122,7 +122,9 @@ class App:
                                    f"{vc.get('vosk_model_path') if vc.get('stt_engine', 'vosk') == 'vosk' else vc.get('whisper_model')})…"))
             t0 = time.time()
             try:
-                extra = [self.cfg["callsign"]["spoken"]] + [u.callsign for u in self.airspace.all_units()] + \
+                from .phraseology.callsign import alias_tokens
+                extra = [self.cfg["callsign"]["spoken"]] + list(alias_tokens()) + \
+                    [u.callsign for u in self.airspace.all_units()] + \
                     [a.name for a in self.airspace.airports.values()] + [a.name_gen for a in self.airspace.airports.values()]
                 self.stt = make_stt(vc, extra)
                 if getattr(self.stt, "name", "") == "none":
@@ -181,11 +183,30 @@ class App:
         self.pilot_says(text)
 
     # ---------- обмен ----------
+    def set_auto_tune(self, enabled: bool) -> None:
+        """Переключатель окна. В config.yaml само не пишется: ключ задаёт старт."""
+        on = bool(enabled)
+        self.cfg.setdefault("radio", {})["auto_tune_com1"] = on
+        self.ctl.auto_tune_com1 = on
+
     def pilot_says(self, text: str):
         with self.lock:
             s = self.source.snapshot()
             evs = self.ctl.on_pilot(text, s)
         self._dispatch(evs)
+        self._apply_tune()
+
+    def _apply_tune(self) -> None:
+        khz = self.ctl.take_tune()
+        if not khz:
+            return
+        try:
+            ok, note = self.source.tune_com1(int(khz))
+        except Exception as e:
+            log.exception("COM1")
+            ok, note = False, f"COM1 не перестроен: {e}"
+        log.info("COM1 автонастройка %s: %s", "ок" if ok else "нет", note)
+        self.ui_q.put(("info" if ok else "hint_text", note))
 
     def _dispatch(self, evs: List):
         for e in evs:
@@ -207,6 +228,7 @@ class App:
                 s = self.source.snapshot()
                 evs = self.ctl.update(s)
             self._dispatch(evs)
+            self._apply_tune()
             if self.pilot_bot is not None and not (self.speaker and self.speaker.busy):
                 for txt in self.pilot_bot.step(s):
                     self.pilot_says(txt)

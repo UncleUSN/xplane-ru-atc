@@ -27,6 +27,8 @@ airports:
     lat: 55.9728
     lon: 37.4146
     elevation_ft: 630
+    # Образец. Когда собран кэш X-Plane, частоту заменяет ряд 1050 apt.dat.
+    atis_freq: 126.600
     transition_altitude_ft: 10000
     transition_levels: *moscow_tl
     squawk_range: ["1501", "1537"]
@@ -105,6 +107,8 @@ airports:
     lat: 59.8003
     lon: 30.2625
     elevation_ft: 79
+    # Образец. Когда собран кэш X-Plane, частоту заменяет ряд 1050 apt.dat.
+    atis_freq: 127.175
     # По XR-DIV: ВП 3500 ft, ЭП FL050 при QNH>=996, FL060 при QNH>=960 — ПРОВЕРЬТЕ по AIP!
     transition_altitude_ft: 3500
     transition_levels:

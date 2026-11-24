@@ -202,6 +202,15 @@ def strip_courtesy_text(text: str) -> str:
     return cleaned.strip()
 
 
+# Обращение, которое можно сказать рядом с позывным и приветствием.
+_ADDRESS = {
+    "диспетчер", "диспетчера", "борт", "борта",
+    "вышка", "вышки", "руление", "руления", "старт", "старта",
+    "подход", "подхода", "круг", "круга", "контроль", "контроля",
+    "перрон", "перрона", "деливери", "башня", "башни",
+}
+
+
 def is_only_courtesy(text: str, callsign: str = "", number: str = "", extra: str = "") -> bool:
     """Текст — приветствие или прощание, можно с позывным и органом.
 
@@ -216,7 +225,7 @@ def is_only_courtesy(text: str, callsign: str = "", number: str = "", extra: str
     rest = strip_courtesy_tokens(norm.split())
     allowed = _allowed_tokens(callsign, number, extra)
     station = set(normalize(extra).split()) if extra else set()
-    return all(tok in _FILLERS or _token_allowed(tok, allowed, station) for tok in rest)
+    return all(tok in _FILLERS or tok in _ADDRESS or _token_allowed(tok, allowed, station) for tok in rest)
 
 
 def annotate(msg) -> None:

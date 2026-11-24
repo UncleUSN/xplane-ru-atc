@@ -332,6 +332,20 @@ class MockSource(DataSource):
     def start(self) -> None:
         threading.Thread(target=self._run, name="mock", daemon=True).start()
 
+    def tune_com1(self, khz: int) -> tuple:
+        """Как в кабине: новая частота в резерв, затем обмен с активной."""
+        from ..radio import describe_tune, khz_value
+        try:
+            value = khz_value(int(khz))
+        except ValueError as e:
+            return False, str(e)
+        state = self.flight.s
+        previous = state.com1_khz
+        state.com1_stby_khz = value
+        state.com1_khz = value
+        state.com1_stby_khz = previous or value
+        return True, describe_tune(value, flipped=True, wrote_active=False)
+
     def stop(self) -> None:
         self._stop.set()
 

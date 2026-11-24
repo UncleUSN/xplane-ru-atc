@@ -7,18 +7,22 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
-from .airspace import Airport, Airspace, Runway, Unit, angle_diff, haversine_km
+from .airspace import Airport, Airspace, Runway, Unit, angle_diff, bearing_deg, haversine_km
 from .events import Hint, PilotMessage, Transmission
 from .model import SimState
 from .phases import Phase, PhaseTracker
 from .phraseology.confirm import is_bare_confirmation
+from .atis import AtisBoard, letter_index, render_broadcast
 from .phraseology.courtesy import (
     append_clause, day_part, farewell_options, greeting_options, hour_of, insert_greeting,
     is_only_courtesy, normalize_chattiness, reply_options, PROBS,
 )
+from .phraseology.callsign import extract_callsign
 from .phraseology.parser import ParsedMessage, parse
 from .phraseology.render import Renderer
+from .radio import parse_auto_tune
 from .flightplan.model import FlightPlan
+from .weather import Weather, weather_for
 
 log = logging.getLogger(__name__)
 
@@ -109,12 +113,25 @@ class Controller:
         self.sim: SimState = SimState()
         self.plan: Optional[FlightPlan] = None         # план из FMC/.fms (None — только config.yaml)
         self.airlines: Dict[str, str] = dict(cfg.get("airlines") or {})
+        # Позывной, названный в эфире, важнее номера рейса из FMC и config.yaml.
+        self.radio_callsign: Optional[Tuple[str, str]] = None
+        self.fmc_callsign: Optional[Tuple[str, str]] = None
+        self._callsign_mismatches: set = set()
+        self._fmc_conflict_noted = False
         self.nav = None                                 # кэш навигации X-Plane, если собран
         self.nav_radius_km = float((cfg.get("navdata") or {}).get("corridor_km") or 50)
         self.nearby = None
         self._nav_t = -1e9
         self._nav_key = None
         self.chattiness = normalize_chattiness((cfg.get("atc") or {}).get("chattiness", "normal"))
+        self.auto_tune_com1 = parse_auto_tune((cfg.get("radio") or {}).get("auto_tune_com1", False))
+        self._tune_khz: Optional[int] = None
+        self.emergency: Optional[str] = None       # mayday | pan | radio
+        self.emergency_source = ""                  # voice | squawk
+        self.atis_board = AtisBoard()
+        self.atis_ack: Dict[str, int] = {}
+        self._atis_mismatch = ""
+        self._atis_auto: Optional[tuple] = None
         # Отдельный поток: код ответчика по-прежнему берётся из self.rng.
         self.talk = random.Random()
         self.talk.setstate(self.rng.getstate())
@@ -251,6 +268,13 @@ class Controller:
         if not m or m.group(1) not in self.airlines:
             return
         spoken, num = self.airlines[m.group(1)], m.group(2).lstrip("0") or "0"
+        self.fmc_callsign = (spoken, num)
+        if self.radio_callsign:
+            # Первая передача в эфире уже задала позывной — FMC его не переписывает.
+            if (spoken, num) != self.radio_callsign and not self._fmc_conflict_noted:
+                self._fmc_conflict_noted = True
+                msgs.append(f"В FMC рейс {flt} ({spoken} {num}), в эфире принят {self.r.callsign}")
+            return
         if (self.r.cs_spoken, self.r.cs_number) != (spoken, num):
             self.r.cs_spoken, self.r.cs_number = spoken, num
             msgs.append(f"Позывной из FMC ({flt}): {spoken} {num}")
@@ -326,6 +350,8 @@ class Controller:
            after_unit: Optional[Unit] = None, decorate: bool = True) -> Transmission:
         # Позывной борта — первым, затем позывной органа (стандартный порядок ФАП).
         # Приветствие и прощание дописываются вокруг шаблона и не меняют readback.
+        if decorate and kind == "atc" and unit.type != "atis":
+            template = self._append_atis(unit, template, s)
         if decorate:
             template = self._decorate(unit, template, s, kind)
         disp, speech = self.r.render(template)
@@ -356,6 +382,155 @@ class Controller:
 
     def handoff_template(self, unit: Unit) -> str:
         return f"работайте с {unit.callsign} {{freq:{unit.freq}}}"
+
+    def _set_handoff(self, unit: Optional[Unit]) -> None:
+        self.handoff_to = unit
+        if unit is not None and self.auto_tune_com1:
+            khz = int(unit.khz)
+            if khz > 0:
+                self._tune_khz = khz
+
+    def take_tune(self) -> Optional[int]:
+        """Частота COM1, которую надо поставить после передачи. Один раз."""
+        khz = self._tune_khz
+        self._tune_khz = None
+        return khz
+
+    # ------------------------------------------------------------------ АТИС
+    _SKIP_ATIS = (
+        "повторите", "неправильно", "подтвердите", "остановитесь", "не разреш",
+        "прекратите", "уходите", "не наблюдаю", "информац",
+    )
+
+    def _xplane_dir(self) -> str:
+        nav = str((self.cfg.get("navdata") or {}).get("xplane_path") or "")
+        imported = str((self.cfg.get("flight_plan_import") or {}).get("xplane_path") or "")
+        return nav or imported
+
+    def _atis_mhz(self, ap: Airport) -> Optional[float]:
+        nav = getattr(self, "nav", None)
+        if nav is not None:
+            try:
+                comms = nav.comms(ap.icao)
+            except Exception:
+                comms = {}
+            if comms.get("atis"):
+                return float(comms["atis"][0])
+        return ap.atis_mhz
+
+    def _airport_on_atis(self, s: SimState) -> Optional[Airport]:
+        if not s.com1_khz:
+            return None
+        for ap in self.airspace.airports.values():
+            mhz = self._atis_mhz(ap)
+            if mhz and abs(int(round(mhz * 1000)) - int(s.com1_khz)) <= 5:
+                return ap
+        nav = getattr(self, "nav", None)
+        if nav is None:
+            return None
+        try:
+            code = nav.atis_icao(s.com1_khz)
+        except Exception:
+            code = None
+        if not code:
+            return None
+        return self.airspace.airports.get(code)
+
+    def _atis_context(self, unit: Optional[Unit]) -> Airport:
+        if unit and unit.airport and unit.airport in self.airspace.airports:
+            return self.airspace.airports[unit.airport]
+        if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB):
+            return self.dep
+        return self.arr
+
+    def _weather_at(self, ap: Airport, s: SimState) -> Weather:
+        return weather_for(s, ap.icao, ap.distance_km(s.lat, s.lon), self._xplane_dir())
+
+    def _atis_letter(self, s: SimState, ap: Optional[Airport]):
+        if ap is None:
+            return None
+        wx = self._weather_at(ap, s)
+        if not wx.usable():
+            return None
+        hour, _source = hour_of(getattr(s, "local_time_sec", None))
+        return self.atis_board.current(ap.icao, wx, hour), wx
+
+    def _observe_atis_report(self, msg: ParsedMessage, s: SimState, unit: Optional[Unit]) -> None:
+        word = msg.slots.get("atis") if msg.slots else None
+        if not word:
+            return
+        ap = self._airport_on_atis(s) or self._atis_context(unit)
+        got = self._atis_letter(s, ap)
+        if not got:
+            return
+        (index, current), _wx = got
+        heard = letter_index(str(word))
+        if heard is None:
+            return
+        if heard == index:
+            self.atis_ack[ap.icao] = index
+            self._atis_mismatch = ""
+        else:
+            self.atis_ack.pop(ap.icao, None)
+            shown = str(word)[:1].upper() + str(word)[1:]
+            self._atis_mismatch = f"информация {current}, не {shown}"
+
+    def _append_atis(self, unit: Unit, template: str, s: SimState) -> str:
+        if self.emergency or any(word in template for word in self._SKIP_ATIS):
+            return template
+        if self._atis_mismatch:
+            text = ", " + self._atis_mismatch
+            self._atis_mismatch = ""
+            return template + text
+        ap = self._atis_context(unit)
+        got = self._atis_letter(s, ap)
+        if not got:
+            return template
+        (index, word), _wx = got
+        if self.atis_ack.get(ap.icao) == index:
+            return template
+        return template + f", информация {word}"
+
+    def _atis_unit(self, ap: Airport) -> Unit:
+        mhz = self._atis_mhz(ap) or 0.0
+        return Unit("atis", f"{ap.name}-АТИС", float(mhz), airport=ap.icao, source="atis")
+
+    def _runway_for_atis(self, ap: Airport, s: SimState) -> str:
+        if ap is self.dep and self.dep_rwy:
+            return self.dep_rwy.id
+        if ap is self.arr and self.arr_rwy:
+            return self.arr_rwy.id
+        if not ap.runways:
+            return ""
+        try:
+            return ap.select_runway(s.wind_dir, s.wind_kt, arrival=ap is self.arr).id
+        except Exception:
+            return ap.runways[0].id
+
+    def _play_atis(self, ap: Optional[Airport], s: SimState, force: bool = False) -> Optional[Transmission]:
+        if ap is None:
+            return None
+        got = self._atis_letter(s, ap)
+        if not got:
+            if not force:
+                return None
+            unit = self._atis_unit(ap)
+            text = f"{ap.name}, АТИС. Фактической погоды нет."
+            t = Transmission(unit, text, text, s.t, "atis")
+            self.events_log.append(t)
+            return t
+        (index, word), wx = got
+        key = (ap.icao, index)
+        if not force and self._atis_auto and self._atis_auto[0] == key and s.t - self._atis_auto[1] < 180:
+            return None
+        self._atis_auto = (key, s.t)
+        disp, speech = render_broadcast(ap, wx, word, self._runway_for_atis(ap, s))
+        t = Transmission(self._atis_unit(ap), disp, speech, s.t, "atis")
+        self.events_log.append(t)
+        return t
+
+    def _maybe_auto_atis(self, s: SimState) -> Optional[Transmission]:
+        return self._play_atis(self._airport_on_atis(s), s, force=False)
 
     def set_cleared(self, c: Clearance) -> None:
         self.cleared = c
@@ -392,9 +567,28 @@ class Controller:
             return out
         out += [e for e in self._proactive(s) if e]
         out += [e for e in self._monitor(s) if e]
+        atis = self._maybe_auto_atis(s)
+        if atis:
+            out.append(atis)
         return out
 
     # ------------------------------------------------------------------ сообщения пилота
+    def _nofreq_text(self, s: SimState) -> str:
+        mhz = f"{s.com1_khz / 1000:.3f}"
+        if self.nav is None:
+            return (f"На частоте {mhz} никто не отвечает "
+                    f"(нет органа ОВД в data/airports.yaml / airspace.yaml)")
+        ap = self.dep if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB) else self.arr
+        parts = []
+        for unit in ap.units.values():
+            extra = ""
+            if unit.aliases:
+                extra = " (также " + ", ".join(f"{alias:.3f}" for alias in unit.aliases) + ")"
+            parts.append(f"{unit.callsign} {unit.freq:.3f}{extra}")
+        listed = "; ".join(parts) if parts else "органов нет"
+        return (f"На частоте {mhz} никто не отвечает. "
+                f"Частоты взяты из навигационных данных X-Plane. {ap.icao}: {listed}")
+
     def responding_unit(self, s: SimState, needed: Optional[Unit]) -> Optional[Unit]:
         if not self.strict_freq:
             return needed or self.controlling
@@ -443,6 +637,42 @@ class Controller:
             return None
         return None
 
+    def _callsign_origin(self) -> str:
+        if self.radio_callsign:
+            return "эфир"
+        if self.fmc_callsign:
+            return "FMC"
+        return "config"
+
+    def _adopt_callsign(self, msg: ParsedMessage, out: List[Event], s: SimState) -> None:
+        """Первый названный в эфире позывной заменяет config и FMC. Дальше другой — только в журнал."""
+        heard = extract_callsign(msg.norm, self.airlines)
+        if heard:
+            msg.callsign = heard
+        hit = msg.callsign
+        if not hit:
+            return
+        new = (hit.spoken, hit.number)
+        if self.radio_callsign is None:
+            self.radio_callsign = new
+            old = f"{self.r.cs_spoken} {self.r.cs_number}".strip()
+            self.r.cs_spoken, self.r.cs_number = new
+            if old == hit.label:
+                text = f"Позывной по эфиру: {hit.label}"
+            else:
+                text = f"Позывной по эфиру: {hit.label} (раньше {old})"
+            log.info(text)
+            out.append(Hint(text=text, t=s.t, key="callsign"))
+            return
+        if new == self.radio_callsign:
+            return
+        if new in self._callsign_mismatches:
+            return
+        self._callsign_mismatches.add(new)
+        text = f"В эфире назван {hit.label}, продолжаем {self.r.callsign}"
+        log.info(text)
+        out.append(Hint(text=text, t=s.t, key="callsign"))
+
     def on_pilot(self, text: str, s: Optional[SimState] = None) -> List[Event]:
         s = s or self.sim
         msg = parse(text)
@@ -452,54 +682,90 @@ class Controller:
         pm = PilotMessage(text=text, norm=msg.norm, intent=msg.intent, t=s.t, unit=unit)
         out.append(pm)
         self.events_log.append(pm)
+        # До проверки «это только приветствие»: позывной в этой фразе уже наш.
+        self._adopt_callsign(msg, out, s)
         self._pilot_greet = bool(msg.greet)
         self._pilot_thanks = bool(msg.thanks)
         self._pilot_goodbye = bool(msg.goodbye)
         try:
+            if unit is None and msg.intent in ("emergency_mayday", "emergency_pan", "emergency_cancel"):
+                unit = self._emergency_unit(s)
             if unit is None:
-                out.append(Hint(text=f"На частоте {s.com1_khz / 1000:.3f} никто не отвечает "
-                                     f"(нет органа ОВД в data/airports.yaml / airspace.yaml)", t=s.t, key="nofreq"))
+                atis_ap = self._airport_on_atis(s)
+                if atis_ap and (msg.intent in ("request_atis", "atis_ack", "check_in")
+                                or msg.slots.get("atis") or "атис" in msg.norm):
+                    unit = self._atis_unit(atis_ap)
+                else:
+                    self._observe_atis_report(msg, s, None)
+                    out.append(Hint(text=self._nofreq_text(s), t=s.t, key="nofreq"))
+                    return out
+            self._observe_atis_report(msg, s, unit)
+            if msg.intent in ("emergency_mayday", "emergency_pan", "emergency_cancel") or (
+                    self.emergency and self._emergency_report(msg)):
+                res = self._handle_emergency(msg, s, unit)
+                if res:
+                    out.append(res)
                 return out
             # «спасибо» не прячет посторонние слова: иначе мусор не дойдёт до readback.
+            # Лишнее слово распознавателя («север») не отменяет выход на связь,
+            # если позывной уже узнан. Без позывного «добрый день абракадабра» по-прежнему «повторите».
             if (msg.greet or msg.farewell) and msg.intent in ("farewell", "check_in") \
                     and "wilco" not in msg.intents and not msg.slots and "на связи" not in msg.norm \
-                    and not self._pure_courtesy(msg, unit):
+                    and not msg.callsign and not self._pure_courtesy(msg, unit):
                 msg.intent = "unknown"
-            # Пилот вышел на связь с органом, куда его передали
-            if self.handoff_to and self.same_unit(unit, self.handoff_to):
-                self.controlling = unit
-                self.handoff_to = None
-            elif self.controlling is None:
-                self.controlling = unit
-
-            # 1) readback
+            # 1) readback. Ключи считаем до смены органа: автонастройка COM1
+            # уже могла перенести пилота на новую частоту, а повтор ещё за старым.
             rel_keys = {"level": ("level", "target_level"), "alt_ft": ("alt_ft", "target_alt_ft"),
                         "squawk": ("squawk",), "freq": ("freq",), "runway": ("runway",), "qnh": ("qnh",)}
             has_rel = bool(self.pending) and any(
                 k in msg.slots for pk in self.pending.items for k in rel_keys.get(pk, ()))
+            looks_readback = (
+                msg.intent in ("readback", "wilco", "unknown")
+                or "wilco" in msg.intents
+                or (has_rel and not str(msg.intent).startswith("request_"))
+            )
+            tuned_during_readback = bool(
+                self.auto_tune_com1 and self.pending and self.handoff_to and unit is not None
+                and looks_readback and self.same_unit(unit, self.handoff_to)
+                and not self.same_unit(self.pending.unit, unit)
+            )
+            readback_unit = self.pending.unit if tuned_during_readback else unit
+            # Пилот вышел на связь с органом, куда его передали.
+            # Пока он повторяет частоту после автонастройки, передачу не закрываем.
+            if self.handoff_to and unit is not None and self.same_unit(unit, self.handoff_to) \
+                    and not tuned_during_readback:
+                self.controlling = unit
+                self._set_handoff(None)
+            elif self.controlling is None and unit.type != "atis":
+                self.controlling = unit
+
+            def _arrive_after_tune() -> None:
+                if tuned_during_readback and self.pending is None and unit is not None:
+                    self.controlling = unit
+                    self._set_handoff(None)
+
             # Одно «добрый день» или «спасибо», пока ждём повтор, не считается ошибкой
             # и не открывает указание заново.
-            if self.pending and self.same_unit(self.pending.unit, unit) and self._pure_courtesy(msg, unit):
-                reply = self._courtesy_reply(msg, s, unit)
+            if self.pending and self.same_unit(self.pending.unit, readback_unit) and self._pure_courtesy(msg, readback_unit):
+                reply = self._courtesy_reply(msg, s, readback_unit)
                 if reply:
                     out.append(reply)
                 return out
-            if self.pending and self.same_unit(self.pending.unit, unit) and (
-                    msg.intent in ("readback", "wilco", "unknown")
-                    or "wilco" in msg.intents
-                    or (has_rel and not msg.intent.startswith("request_"))):
+            if self.pending and self.same_unit(self.pending.unit, readback_unit) and looks_readback:
                 res = self._check_readback(msg, s)
                 if res is not None:
+                    _arrive_after_tune()
                     out.append(res)
                     return out
                 # Голое «понял» закрыло указание без ответной реплики — не проваливаться в «повторите».
                 # Верный readback частоты по-прежнему пропускается дальше (доклад на связи в той же фразе).
                 if self.pending is None:
+                    _arrive_after_tune()
                     return out
             # 2) направить к нужному органу
             if needed and self.strict_freq and not self.same_unit(unit, needed) and unit.type != needed.type:
                 out.append(self.tx(unit, f"{{cs}}, {unit.callsign}, {self.handoff_template(needed)}", s))
-                self.handoff_to = needed
+                self._set_handoff(needed)
                 return out
             handler = getattr(self, f"_h_{msg.intent}", None)
             if handler is None:
@@ -534,7 +800,7 @@ class Controller:
         if after:
             parts.append(after)
         if after_unit:
-            self.handoff_to = after_unit
+            self._set_handoff(after_unit)
         if not parts:
             return None
         return self.tx(unit, "{cs}, " + ", ".join(parts), s)
@@ -600,7 +866,7 @@ class Controller:
         self.pending = None
         parts = [x for x in (items, after) if x]
         if after_unit:
-            self.handoff_to = after_unit
+            self._set_handoff(after_unit)
         if not parts:
             return None
         return self.tx(unit, "{cs}, " + ", ".join(parts), s)
@@ -652,7 +918,7 @@ class Controller:
         return "понял" in template or "правильно" in template
 
     def _decorate(self, unit: Unit, template: str, s: SimState, kind: str) -> str:
-        if kind != "atc" or self.chattiness == "off":
+        if self.emergency or kind != "atc" or self.chattiness == "off":
             return template
         if any(word in template for word in self._NO_COURTESY):
             return template
@@ -703,6 +969,161 @@ class Controller:
 
     def _h_radio_check(self, msg, s, unit):
         return self.tx(unit, f"{{cs}}, {unit.callsign}, слышу вас отлично", s)
+
+    def _h_request_atis(self, msg, s, unit):
+        ap = self._airport_on_atis(s) or self._atis_context(unit)
+        return self._play_atis(ap, s, force=True)
+
+    def _weather_airport(self, msg: ParsedMessage, _s: SimState) -> Optional[Airport]:
+        import re
+        norm = msg.norm
+        if re.search(r"назначен|прилет", norm):
+            return self.arr
+        if re.search(r"вылет\w*|отправлен", norm):
+            return self.dep
+        found = None
+        for ap in self.airspace.airports.values():
+            for name in (ap.name, ap.name_gen):
+                token = (name or "").lower().replace("ё", "е")
+                if len(token) >= 4 and re.search(rf"\b{re.escape(token)}\b", norm):
+                    found = ap
+            if re.search(rf"\b{ap.icao.lower()}\b", norm):
+                found = ap
+        return found or self._atis_context(None)
+
+    def _h_request_weather(self, msg, s, unit):
+        ap = self._weather_airport(msg, s)
+        if ap is None:
+            return self.tx(unit, "{cs}, погоду этого аэродрома не вижу", s, decorate=False)
+        wx = self._weather_at(ap, s)
+        if not wx.usable():
+            return self.tx(unit, f"{{cs}}, фактической погоды {ap.name} нет", s, decorate=False)
+        note = ""
+        if wx.source == "sim" and ap.distance_km(s.lat, s.lon) > 30:
+            note = "Сводки аэродрома нет, это погода у самолёта"
+        disp, speech = render_broadcast(
+            ap, wx, "", self._runway_for_atis(ap, s), remarks=note, mode="weather")
+        cs_d, cs_s = self.r.render("{cs}")
+        who = unit.callsign
+        t = Transmission(unit, f"{cs_d}, {who}, {disp}", f"{cs_s}, {who}, {speech}", s.t, "atc")
+        self.last_tx = t
+        self.events_log.append(t)
+        return t
+
+    def _emergency_unit(self, s: SimState) -> Optional[Unit]:
+        if self.controlling and self.controlling.type != "atis":
+            return self.controlling
+        sec = self.sector_unit(s)
+        if sec:
+            return sec
+        for kind in ("tower", "approach", "radar", "delivery", "ground"):
+            unit = self.dep.unit(kind)
+            if unit:
+                return unit
+        return None
+
+    def _emergency_report(self, msg: ParsedMessage) -> bool:
+        import re
+        if msg.intent not in ("unknown", "check_in", "readback", "wilco"):
+            return False
+        return bool(re.search(r"на борту|человек|топлив|душ", msg.norm))
+
+    def _nearest_field(self, s: SimState) -> Tuple[Airport, str, int, int]:
+        ap, dist = self.airspace.nearest_airport(s.lat, s.lon)
+        if ap is None:
+            ap, dist = self.dep, self.dep.distance_km(s.lat, s.lon)
+        runway = ""
+        if ap.runways:
+            try:
+                runway = ap.select_runway(s.wind_dir, s.wind_kt, arrival=True).id
+            except Exception:
+                runway = ap.runways[0].id
+        hdg = int(round(bearing_deg(s.lat, s.lon, ap.lat, ap.lon))) % 360 or 360
+        return ap, runway, max(0, int(round(dist))), hdg
+
+    def _emergency_place(self, s: SimState) -> str:
+        _ap, runway, km, hdg = self._nearest_field(s)
+        rwy = f" ВПП {{rwy:{runway}}}," if runway else ""
+        return f"Ближайший подходящий {_ap.name},{rwy} удаление {{km:{km}}}, курс {{hdg:{hdg}}}."
+
+    def _mayday_text(self, s: SimState, from_squawk: bool) -> str:
+        seen = "наблюдаю бедствие, ответчик {sq:7700}. " if from_squawk else "бедствие принял, приоритет ваш. "
+        return ("{cs}, " + seen + "Доложите намерения, количество людей на борту и остаток топлива. "
+                + self._emergency_place(s) + " По готовности ответчик {sq:7700}.")
+
+    def _pan_text(self, s: SimState) -> str:
+        return ("{cs}, срочность принял, приоритет ниже бедствия. "
+                "Доложите намерения, количество людей на борту и остаток топлива. "
+                + self._emergency_place(s) + " При необходимости ответчик {sq:7700}.")
+
+    def _radio_fail_text(self, s: SimState) -> str:
+        return ("{cs}, отказ радиосвязи, ответчик {sq:7600}. Если слышите, продолжайте по последнему разрешению. "
+                + self._emergency_place(s))
+
+    def _handle_emergency(self, msg: ParsedMessage, s: SimState, unit: Unit) -> Optional[Transmission]:
+        if msg.intent == "emergency_cancel":
+            return self._cancel_emergency(s, unit)
+        if msg.intent == "emergency_pan":
+            self.emergency, self.emergency_source = "pan", "voice"
+            self.pending = None
+            return self.tx(unit, self._pan_text(s), s, decorate=False)
+        if msg.intent == "emergency_mayday":
+            self.emergency, self.emergency_source = "mayday", "voice"
+            self.pending = None
+            return self.tx(unit, self._mayday_text(s, from_squawk=False), s, decorate=False)
+        return self.tx(unit, "{cs}, понял, приоритет сохранён. Доложите намерения.", s, decorate=False)
+
+    def _cancel_emergency(self, s: SimState, unit: Unit) -> Transmission:
+        kind = self.emergency
+        self.emergency = None
+        self.emergency_source = ""
+        if not kind:
+            return self.tx(unit, "{cs}, бедствие не объявлялось", s, decorate=False)
+        name = {"mayday": "бедствие", "pan": "срочность", "radio": "отказ радиосвязи"}.get(kind, "бедствие")
+        tail = ""
+        if f"{s.xpdr_code:04d}" in ("7700", "7600") and self.squawk:
+            tail = f" Снимите код бедствия, установите ответчик {{sq:{self.squawk}}}."
+        return self.tx(unit, f"{{cs}}, {name} отменено.{tail} Доложите намерения.", s, decorate=False)
+
+    def _squawk_emergency(self, s: SimState, ctrl: Optional[Unit], speak_ok: bool) -> List[Event]:
+        code = f"{s.xpdr_code:04d}"
+        out: List[Event] = []
+        if code == "7700" and self.emergency != "mayday":
+            self.emergency, self.emergency_source = "mayday", "squawk"
+            self.pending = None
+            if speak_ok and ctrl is not None:
+                out.append(self.tx(ctrl, self._mayday_text(s, from_squawk=True), s, decorate=False))
+            else:
+                hinted = self.hint("mayday", "Ответчик 7700 — бедствие", s, cooldown=30)
+                if hinted:
+                    out.append(hinted)
+        elif code == "7600" and self.emergency not in ("radio", "mayday"):
+            self.emergency, self.emergency_source = "radio", "squawk"
+            self.pending = None
+            if speak_ok and ctrl is not None:
+                out.append(self.tx(ctrl, self._radio_fail_text(s), s, decorate=False))
+            else:
+                hinted = self.hint("radio_fail", "Ответчик 7600 — отказ радиосвязи", s, cooldown=30)
+                if hinted:
+                    out.append(hinted)
+        elif self.emergency_source == "squawk" and code not in ("7700", "7600"):
+            self.emergency = None
+            self.emergency_source = ""
+            hinted = self.hint("emergency_clear", "Код бедствия снят", s, cooldown=5)
+            if hinted:
+                out.append(hinted)
+        return out
+
+    def _h_atis_ack(self, msg, s, unit):
+        ap = self._airport_on_atis(s) or self._atis_context(unit)
+        got = self._atis_letter(s, ap) if ap else None
+        if got and self.atis_ack.get(ap.icao) == got[0][0]:
+            return self.tx(unit, f"{{cs}}, информация {got[0][1]} принята", s, decorate=False)
+        if self._atis_mismatch:
+            text = self._atis_mismatch
+            self._atis_mismatch = ""
+            return self.tx(unit, "{cs}, " + text, s, decorate=False)
+        return self.tx(unit, "{cs}, назовите букву информации", s, decorate=False)
 
     def _h_wilco(self, msg, s, unit):
         return None
@@ -790,7 +1211,7 @@ class Controller:
                f"{{qnh:{self.qnh(s)}}}")
         if not self.same_unit(tower, unit):
             tpl += f", на предварительном {self.handoff_template(tower)}"
-            self.handoff_to = tower
+            self._set_handoff(tower)
         return self.tx(unit, tpl, s, readback={"runway": self.dep_rwy.id, "qnh": self.qnh(s)})
 
     def _h_request_lineup(self, msg, s, unit):
@@ -817,6 +1238,8 @@ class Controller:
 
     def _h_check_in(self, msg, s, unit):
         ph = self.phase
+        if unit.type == "atis":
+            return self._play_atis(self._atis_context(unit), s, force=True)
         self.controlling = unit
         if unit.type in ("delivery",) and not self.flags["clearance"]:
             return self._h_request_clearance(msg, s, unit)
@@ -932,7 +1355,7 @@ class Controller:
         tower = self.unit_of(self.arr, "tower")
         if not self.same_unit(tower, unit):
             self.flags["tower_handoff_arr"] = True
-            self.handoff_to = tower
+            self._set_handoff(tower)
             return self.tx(unit, f"{{cs}}, {self.handoff_template(tower)}", s, readback={"freq": tower.freq})
         return self._h_request_landing(msg, s, unit)
 
@@ -953,7 +1376,7 @@ class Controller:
         tpl = f"{{cs}}, понял, по схеме ухода набирайте {{alt:{alt}}}"
         if not self.same_unit(nxt, unit):
             tpl += f", {self.handoff_template(nxt)}"
-            self.handoff_to = nxt
+            self._set_handoff(nxt)
         return self.tx(unit, tpl, s, readback={"alt_ft": alt})
 
     def _h_runway_vacated(self, msg, s, unit):
@@ -961,7 +1384,7 @@ class Controller:
         if self.same_unit(ground, unit):
             return self._h_request_taxi_in(msg, s, unit)
         self.flags["ground_handoff_arr"] = True
-        self.handoff_to = ground
+        self._set_handoff(ground)
         return self.tx(unit, f"{{cs}}, {self.handoff_template(ground)}", s, readback={"freq": ground.freq})
 
     def _h_request_taxi_in(self, msg, s, unit):
@@ -983,7 +1406,7 @@ class Controller:
     def _on_freq(self, s: SimState, unit: Optional[Unit]) -> bool:
         if unit is None:
             return False
-        return (not self.strict_freq) or abs(s.com1_khz - unit.khz) <= 3
+        return (not self.strict_freq) or unit.matches_khz(s.com1_khz)
 
     def _route_points(self, s: SimState) -> Tuple[List[Tuple[float, float]], List[str]]:
         points = [(s.lat, s.lon), (self.dep.lat, self.dep.lon), (self.arr.lat, self.arr.lon)]
@@ -1045,7 +1468,7 @@ class Controller:
             nxt = self.dep_terminal_unit() or self.sector_unit(s)
             if nxt and not self.same_unit(nxt, ctrl):
                 self.flags["dep_handoff"] = True
-                self.handoff_to = nxt
+                self._set_handoff(nxt)
                 out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                 return out
         # Радар/подход вылета -> РЦ
@@ -1056,7 +1479,7 @@ class Controller:
                 nxt = self.sector_unit(s)
                 if nxt:
                     self.flags["acc_handoff"] = True
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
         if ctrl.type == "control" and not s.on_ground:
@@ -1066,7 +1489,7 @@ class Controller:
             if sec and sec.id != ctrl.sector_id and abs(sec.unit().khz - ctrl.khz) > 3:
                 nxt = sec.unit()
                 if not self.same_unit(self.handoff_to, nxt):
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
             # снижение
@@ -1080,7 +1503,7 @@ class Controller:
             if self.flags["descent"] and d_arr < self.arr.approach_radius_km:
                 nxt = terms[0] if terms else self.arr.unit("tower")
                 if nxt and not self.same_unit(self.handoff_to, nxt):
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
                 if nxt is None and not self.flags["approach"] and d_arr < 40:
@@ -1094,7 +1517,7 @@ class Controller:
             if len(terms) == 2 and self.same_unit(ctrl, terms[0]) and d_arr < self.arr.radar_radius_km:
                 nxt = terms[1]
                 if not self.same_unit(self.handoff_to, nxt):
-                    self.handoff_to = nxt
+                    self._set_handoff(nxt)
                     out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(nxt)}", s, readback={"freq": nxt.freq}))
                     return out
             last = self.same_unit(ctrl, terms[-1]) if terms else False
@@ -1110,7 +1533,7 @@ class Controller:
                         tower = self.arr.unit("tower")
                         if tower:
                             self.flags["tower_handoff_arr"] = True
-                            self.handoff_to = tower
+                            self._set_handoff(tower)
                             out.append(self._pro(ctrl, f"{{cs}}, {self.handoff_template(tower)}", s,
                                                  readback={"freq": tower.freq}))
                             return out
@@ -1122,7 +1545,7 @@ class Controller:
                 ground = self.arr.unit("ground")
                 if ground:
                     self.flags["ground_handoff_arr"] = True
-                    self.handoff_to = ground
+                    self._set_handoff(ground)
                     out.append(self._pro(ctrl, f"{{cs}}, после освобождения ВПП {self.handoff_template(ground)}", s,
                                          readback={"freq": ground.freq}))
                     return out
@@ -1156,6 +1579,7 @@ class Controller:
             out.append(self.hint("gear", "ШАССИ НЕ ВЫПУЩЕНО ниже 1500 ft AGL!", s, cooldown=30))
 
         # --- ответчик ---
+        out.extend(self._squawk_emergency(s, ctrl, speak_ok))
         airborne = not s.on_ground and ph in AIRBORNE_PHASES
         alt_rep = s.xpdr_alt_reporting
         if self._held("xpdr_mode", airborne and not alt_rep, s.t, 30):
@@ -1163,8 +1587,10 @@ class Controller:
                 out.append(self.tx(ctrl, "{cs}, ответчик не наблюдаю, проверьте режим ответчика", s, kind="warning"))
             else:
                 out.append(self.hint("xpdr_mode", "Ответчик не в режиме ALT/TA/RA", s))
-        if self.squawk and self.pending is None and (airborne or ph in (Phase.TAXI_OUT, Phase.LINEUP)):
-            if self._held("xpdr_code", f"{s.xpdr_code:04d}" != self.squawk, s.t, 25):
+        code_now = f"{s.xpdr_code:04d}"
+        if self.squawk and self.pending is None and not self.emergency and code_now not in ("7700", "7600") \
+                and (airborne or ph in (Phase.TAXI_OUT, Phase.LINEUP)):
+            if self._held("xpdr_code", code_now != self.squawk, s.t, 25):
                 if speak_ok and airborne and self.cooldown_ok("xpdr_code_v", s, 120):
                     out.append(self.tx(ctrl, f"{{cs}}, проверьте код ответчика, установите {{sq:{self.squawk}}}", s, kind="warning"))
                 else:
@@ -1230,6 +1656,15 @@ class Controller:
         return out
 
     # ------------------------------------------------------------------ сводка для UI
+    def _atis_status(self) -> str:
+        ap = self.dep if self.phase in GROUND_DEP_PHASES or self.phase in (Phase.TAKEOFF, Phase.CLIMB) else self.arr
+        got = self._atis_letter(self.sim, ap)
+        if not got:
+            return "-"
+        (index, word), _wx = got
+        ack = "получена" if self.atis_ack.get(ap.icao) == index else "не подтверждена"
+        return f"{ap.icao} {word}, {ack}"
+
     def status(self) -> Dict[str, str]:
         c = self.cleared
         clr = "-" if not c else (f"FL{c.value:03d}" if c.kind == "fl" else f"{c.value} ft QNH")
@@ -1242,6 +1677,9 @@ class Controller:
             "dep_rwy": self.dep_rwy.id if self.dep_rwy else "-",
             "arr_rwy": self.arr_rwy.id if self.arr_rwy else "-",
             "pending": ", ".join(f"{k}={v}" for k, v in self.pending.items.items()) if self.pending else "-",
+            "callsign": f"{self.r.callsign} ({self._callsign_origin()})",
+            "atis": self._atis_status(),
+            "emergency": {"mayday": "БЕДСТВИЕ", "pan": "СРОЧНОСТЬ", "radio": "ОТКАЗ РАДИО"}.get(self.emergency or "", ""),
             "route": f"{self.dep.icao} → {self.arr.icao}, FL{self.cruise_fl:03d}",
             "plan": self.plan.summary() if self.plan else "нет (config.yaml)",
             "ctrl_type": self.controlling.type if self.controlling else "",

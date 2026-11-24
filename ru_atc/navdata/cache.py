@@ -261,6 +261,15 @@ class NavCache:
         out["toplevel"] = sum(1 for s in self.sectors() if s.priority == 3)
         return out
 
+    def atis_icao(self, khz: int) -> Optional[str]:
+        """Аэродром, чей АТИС (ряд 1050) совпал с частотой COM1, кГц."""
+        best, best_d = None, 99
+        for row in self.db.execute("SELECT airport, mhz FROM frequencies WHERE kind='atis'"):
+            delta = abs(int(round(float(row["mhz"]) * 1000)) - int(khz))
+            if delta <= 5 and delta < best_d:
+                best, best_d = row["airport"], delta
+        return best
+
     def comms(self, icao: str) -> Dict[str, Tuple[float, str, str]]:
         found: Dict[str, Tuple[float, str, str]] = {}
         for row in self.db.execute(

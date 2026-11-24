@@ -21,9 +21,9 @@ AppId={{7E2A9C14-6B0F-4E8A-9D33-1C5F8A2B4D70}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-; Ресурс версии Windows принимает только числа. Строка 0.3.1-beta остаётся в AppVersion.
+; Ресурс версии Windows принимает только числа. Строка 0.3.2-beta остаётся в AppVersion.
 #ifndef MyVersionInfo
-  #define MyVersionInfo "0.3.1.0"
+  #define MyVersionInfo "0.3.2.0"
 #endif
 VersionInfoVersion={#MyVersionInfo}
 AppPublisher={#MyAppName}
